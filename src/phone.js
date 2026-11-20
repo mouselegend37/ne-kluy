@@ -1,0 +1,2618 @@
+/**
+ * Звонок «сотрудника оператора связи»: 3D-телефон + ветвящийся диалог.
+ *
+ * Модель — iPhone 18 Pro Max в бургунди (цвет из референсов Figma).
+ * Геометрия считана с габаритов 17 Pro Max: 163.4 × 78.0 × 8.75 мм,
+ * отношение сторон корпуса 78.0 / 163.4 = 0.477. Здесь корпус 1.90 × 3.98,
+ * экран 6.9" (2868 × 1320 → 0.460) — 1.75 × 3.80.
+ * Дизайн-сетка экрана 512 × 1097, текстура ×2.
+ *
+ * Экран живёт как настоящий: блокировка с часами и уведомлениями → свайп
+ * вверх → входящий вызов. Если разговор дошёл до кода из СМС, на телефон
+ * приходит сообщение с того же номера, что называл «оператор», — баннером,
+ * со звуком и записью в списке уведомлений.
+ *
+ * Заставка-сцена: телефон лежит «лицом вниз» (видно яблоко и блок камер),
+ * начинает дрожать — идут сигналы вызова, — затем переворачивается экраном
+ * к человеку, и включается неизвестный номер. Кнопки «Ответить» и «Отклонить»
+ * находятся на самом экране: попадание считается рейкастом по плоскости экрана,
+ * поэтому не зависит от поворота модели и размера окна.
+ *
+ * Голос — нейросетевой (edge-tts, en-US-AndrewMultilingual — мужчина,
+ * en-US-AvaMultilingual — женщина), файлы лежат в src/audio.
+ * Если звук не проигрался, диалог всё равно идёт дальше: текст на месте.
+ */
+import * as THREE from "three";
+
+import helloAudio from "./audio/hello.mp3";
+import whoAudio from "./audio/who.mp3";
+import pitchAudio from "./audio/pitch.mp3";
+import smsAudio from "./audio/sms.mp3";
+import pressureAudio from "./audio/pressure.mp3";
+import afterCodeAudio from "./audio/after_code.mp3";
+import helloAudioF from "./audio/hello-f.mp3";
+import whoAudioF from "./audio/who-f.mp3";
+import pitchAudioF from "./audio/pitch-f.mp3";
+import smsAudioF from "./audio/sms-f.mp3";
+import pressureAudioF from "./audio/pressure-f.mp3";
+import afterCodeAudioF from "./audio/after_code-f.mp3";
+import envStudio from "./assets/env-studio-hi.jpg";
+
+/* ── дизайн-сетка экрана ─────────────────────────────────────────── */
+
+const DESIGN = { w: 512, h: 1097 };
+/* Масштаб текстуры экрана. Не константа: он подбирается под фактический размер
+   холста на странице, иначе текст либо растягивается (мыло), либо сжимается
+   втрое и теряет резкость. */
+let TEXTURE_SCALE = 2;
+
+const COLOR = {
+  screenTop: "#2b141a",
+  screenBottom: "#07050a",
+  burgundy: "#5c2b33",
+  burgundyLight: "#8a4a52",
+  text: "#f3f6fb",
+  muted: "rgba(186, 198, 216, 0.72)",
+  decline: "#ff453a",
+  accept: "#30d158",
+  island: "#000000",
+  vpn: "rgba(126, 228, 255, 0.95)",
+};
+
+const BUTTONS = {
+  decline: { x: 148, y: 884, r: 52, label: "Отклонить" },
+  answer: { x: 364, y: 884, r: 52, label: "Ответить" },
+  hangup: { x: 256, y: 884, r: 52, label: "Завершить" },
+};
+const HIT_PADDING = 26;
+
+const ISLAND = { w: 154, h: 38, top: 44 };
+
+/* ── сценарий ────────────────────────────────────────────────────── */
+
+const NODES = {
+  incoming: { entries: [], answer: "hello", decline: "end_declined" },
+  hello: {
+    audio: helloAudio,
+    entries: [{ who: "scam", text: "Здравствуйте! Это оператор сотовой связи. Вы меня нормально слышите?" }],
+    choices: [
+      { label: "Да, слышу", next: "pitch" },
+      { label: "Кто вы и откуда у вас мой номер?", next: "who" },
+      { label: "Сбросить", next: "end_declined" },
+    ],
+  },
+  who: {
+    audio: whoAudio,
+    entries: [
+      {
+        who: "scam",
+        text: "Я оператор, звоню по вашему номеру из базы абонентов. Слушайте, у вас подходит к концу срок годности сим-карты.",
+      },
+    ],
+    choices: [
+      { label: "Продолжайте", next: "pitch" },
+      { label: "Сбросить", next: "end_declined" },
+    ],
+  },
+  pitch: {
+    audio: pitchAudio,
+    entries: [
+      {
+        who: "scam",
+        text: "Срок действия вашей сим-карты заканчивается. Продление бесплатное, займёт одну минуту. Пока заявка оформляется — связь и интернет работают нормально, жалоб нет?",
+      },
+      {
+        who: "note",
+        text: "В этот момент вас держат «в заявке»: минута тишины нужна, чтобы вы не успели проверить условия договора.",
+      },
+    ],
+    choices: [
+      { label: "Хорошо, что нужно сделать?", next: "sms" },
+      { label: "У сим-карты нет срока действия", next: "pressure" },
+      { label: "Сбросить", next: "end_declined" },
+    ],
+  },
+  sms: {
+    audio: smsAudio,
+    entries: [
+      {
+        who: "scam",
+        text: "Сейчас придёт СМС с номера 1414 — там код подтверждения продления. Назовите его, я внесу в базу, и номер продлится на пять лет.",
+      },
+      {
+        who: "note",
+        text: "Это цель всего звонка. Код подтверждения — ваша подпись под операцией; сотруднику она не нужна никогда.",
+      },
+    ],
+    choices: [
+      { label: "Назвать код", next: "after_code" },
+      { label: "Зачем вам код? Скажите, что я подписываю", next: "pressure" },
+      { label: "Сбросить и позвонить оператору самому", next: "end_good" },
+    ],
+  },
+  pressure: {
+    audio: pressureAudio,
+    entries: [
+      {
+        who: "scam",
+        text: "Если не назовёте код — номер заблокируют и внесут в чёрный список, восстановить будет нельзя. Через десять минут будет поздно.",
+      },
+      {
+        who: "note",
+        text: "Угроза придумана, но работает: потерять номер страшнее, чем потерять деньги — с ним связаны банк и «Госуслуги».",
+      },
+    ],
+    choices: [
+      { label: "Ладно, диктуйте код", next: "after_code" },
+      { label: "Я перезвоню в поддержку сам", next: "end_good" },
+      { label: "Сбросить", next: "end_good" },
+    ],
+  },
+  after_code: {
+    audio: afterCodeAudio,
+    entries: [
+      { who: "you", text: "Код… {code}." },
+      {
+        who: "scam",
+        text: "Спасибо, номер продлён. И последнее, чтобы закрыть заявку: где вы работаете официально, какая зарплата и в каком банке получаете?",
+      },
+      {
+        who: "note",
+        text: "Вот и настоящая цель второго шага: эти ответы нужны для следующего звонка — «из службы безопасности вашего банка».",
+      },
+    ],
+    choices: [
+      { label: "Ответить на все вопросы", next: "end_worst" },
+      { label: "Это не ваше дело", next: "end_after_code" },
+      { label: "Сбросить", next: "end_after_code" },
+    ],
+  },
+  end_declined: {
+    screen: "ended",
+    entries: [
+      {
+        who: "note",
+        text: "Вы сбросили — и это правильный поступок. Номер не «просрочен»: срок действия есть у договора и тарифа, а не у сим-карты.",
+      },
+      {
+        who: "note",
+        text: "Если сомневаетесь — позвоните оператору по номеру с его сайта или из приложения, а не по входящему вызову.",
+      },
+    ],
+    end: true,
+  },
+  end_good: {
+    screen: "ended",
+    entries: [
+      { who: "you", text: "Я перезвоню в поддержку сам." },
+      {
+        who: "note",
+        text: "Правильно. Кода вы не отдали — значит, доступ к номеру и аккаунтам остался у вас.",
+      },
+      {
+        who: "note",
+        text: "Проверить продление и тариф можно в приложении оператора, а не в разговоре с тем, кто позвонил первым.",
+      },
+    ],
+    end: true,
+  },
+  end_after_code: {
+    screen: "ended",
+    entries: [
+      { who: "note", text: "Код вы отдали, но вовремя остановились. Дальше действовать нужно быстро." },
+      {
+        who: "note",
+        text: "1. Позвоните оператору по номеру с сайта: проверьте, какие операции и привязки появились. 2. Зайдите в «Госуслуги» и банк — посмотрите историю входов. 3. Смените пароли, отзовите чужие устройства.",
+      },
+    ],
+    end: true,
+  },
+  end_worst: {
+    screen: "ended",
+    entries: [
+      { who: "you", text: "Работаю в школе, зарплата 42 тысячи, получаю в Сбере." },
+      {
+        who: "note",
+        text: "Теперь у них есть код, место работы, доход и банк. Следующий звонок будет «из службы безопасности Сбера» — с точными деталями, которым хочется верить.",
+      },
+      {
+        who: "note",
+        text: "Что делать: позвонить оператору и в банк, сменить пароли, проверить кредитную историю и заявки на «Госуслугах».",
+      },
+    ],
+    end: true,
+  },
+};
+
+/* Женские реплики того же сценария: при каждом новом разговоре «оператором»
+   может оказаться и мужчина, и женщина — голос подбирается вместе с репликами. */
+const VOICE_F = {
+  hello: helloAudioF,
+  who: whoAudioF,
+  pitch: pitchAudioF,
+  sms: smsAudioF,
+  pressure: pressureAudioF,
+  after_code: afterCodeAudioF,
+};
+Object.entries(VOICE_F).forEach(([id, src]) => {
+  if (NODES[id]) NODES[id].audioF = src;
+});
+
+const reduced = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/* ── рисование экрана ────────────────────────────────────────────── */
+
+const HANDSET =
+  "M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 " +
+  "19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 " +
+  "2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 " +
+  "A2 2 0 0 1 22 16.92z";
+const handset = new Path2D(HANDSET);
+
+const SHIELD = "M12 22s8-3.5 8-10V5l-8-3-8 3v7c0 6.5 8 10 8 10z";
+const shield = new Path2D(SHIELD);
+const PLANE = "M22 3 2.5 10.4l5.9 2.1L10 19l3.1-4.2 5.1 3.4z";
+const BUBBLE = "M12 3C6.9 3 3 6.4 3 10.6c0 2.4 1.4 4.6 3.6 6L6 21l4-1.9c.6.1 1.3.2 2 .2 5.1 0 9-3.4 9-7.6S17.1 3 12 3z";
+
+/** Пул уведомлений: на блокировке каждый раз новый набор из трёх. */
+const NOTIFICATION_POOL = [
+  { app: "telegram", color: "#2aabee", title: "Мама", text: "Ты покушал? Позвони, как освободишься." },
+  { app: "telegram", color: "#2aabee", title: "Андрей", text: "Скинь, пожалуйста, фотки с рыбалки, я потерял." },
+  { app: "telegram", color: "#2aabee", title: "Работа", text: "Совещание перенесли на 11:30, ссылку скину утром." },
+  { app: "sms", color: "#30d158", title: "СМС · 900", text: "Списание 1 290 ₽. Если это не вы — 8 800 555-35-35." },
+  { app: "sms", color: "#30d158", title: "СМС · Доставка", text: "Заказ №4821 ждёт в пункте выдачи до 21:00." },
+  { app: "sms", color: "#30d158", title: "СМС · 900", text: "Зачисление зарплаты 42 000 ₽. Баланс 43 517,40 ₽." },
+  { app: "call", color: "#ff453a", title: "Пропущенный", text: "Неизвестный номер, 2 попытки" },
+  { app: "call", color: "#ff453a", title: "Пропущенный", text: "Сергей, 1 попытка" },
+  { app: "sms", color: "#30d158", title: "СМС · Поликлиника", text: "Приём терапевта завтра в 09:40, кабинет 214." },
+  { app: "telegram", color: "#2aabee", title: "Соседи", text: "Воду отключат с 14:00 до 18:00, предупредили." },
+];
+
+/** Три разных уведомления, у каждого своё время «назад от текущего». */
+function makeNotifications() {
+  const pool = [...NOTIFICATION_POOL];
+  for (let i = pool.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  const picked = [];
+  for (const app of ["telegram", "sms", "call"]) {
+    const hit = pool.find((card) => card.app === app && !picked.includes(card));
+    if (hit) picked.push(hit);
+  }
+  const rest = pool.filter((card) => !picked.includes(card));
+  while (picked.length < 3 && rest.length) picked.push(rest.shift());
+
+  const now = new Date();
+  return picked.map((card, index) => {
+    const at = new Date(now.getTime() - (index * 23 + 4 + Math.floor(Math.random() * 12)) * 60000);
+    return {
+      ...card,
+      time: at.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
+    };
+  });
+}
+
+/** Время и дата берутся заново при каждой отрисовке: экран живёт, а не «замирает». */
+/** Плоскость со скруглёнными углами и нормализованными UV — для экрана. */
+function roundedPlane(w, h, radius) {
+  const r = Math.min(radius, w / 2, h / 2);
+  const shape = new THREE.Shape();
+  shape.moveTo(-w / 2 + r, -h / 2);
+  shape.lineTo(w / 2 - r, -h / 2);
+  shape.quadraticCurveTo(w / 2, -h / 2, w / 2, -h / 2 + r);
+  shape.lineTo(w / 2, h / 2 - r);
+  shape.quadraticCurveTo(w / 2, h / 2, w / 2 - r, h / 2);
+  shape.lineTo(-w / 2 + r, h / 2);
+  shape.quadraticCurveTo(-w / 2, h / 2, -w / 2, h / 2 - r);
+  shape.lineTo(-w / 2, -h / 2 + r);
+  shape.quadraticCurveTo(-w / 2, -h / 2, -w / 2 + r, -h / 2);
+  const geometry = new THREE.ShapeGeometry(shape, 24);
+  const pos = geometry.attributes.position;
+  const uv = geometry.attributes.uv;
+  for (let i = 0; i < pos.count; i += 1) {
+    uv.setXY(i, (pos.getX(i) + w / 2) / w, (pos.getY(i) + h / 2) / h);
+  }
+  uv.needsUpdate = true;
+  return geometry;
+}
+
+const liveClock = () => new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+const liveDate = () =>
+  new Date().toLocaleDateString("ru-RU", { weekday: "short", day: "numeric", month: "long" });
+
+const roundRect = (ctx, x, y, w, h, r) => {
+  const radius = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + w, y, x + w, y + h, radius);
+  ctx.arcTo(x + w, y + h, x, y + h, radius);
+  ctx.arcTo(x, y + h, x, y, radius);
+  ctx.arcTo(x, y, x + w, y, radius);
+  ctx.closePath();
+};
+
+function drawHandset(ctx, cx, cy, size, angle) {
+  const k = size / 24;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+  ctx.scale(k, k);
+  ctx.translate(-12, -12);
+  ctx.lineWidth = 2.2;
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.stroke(handset);
+  ctx.restore();
+}
+
+let grainCanvas = null;
+
+function drawWallpaper(ctx) {
+  /* Обои iPhone 18 Pro / iOS 26: глубокая бордовая тьма, по ней —
+     тонкие светящиеся дуги с ярким ядром и мягким ореолом (приём из
+     «Prism 100 dark gradients»), плюс редкая пыль. Никаких полос. */
+  const bg = ctx.createLinearGradient(0, 0, DESIGN.w * 0.3, DESIGN.h);
+  bg.addColorStop(0, "#2b0d16");
+  bg.addColorStop(0.28, "#1a0810");
+  bg.addColorStop(0.62, "#0e0508");
+  bg.addColorStop(1, "#050306");
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, DESIGN.w, DESIGN.h);
+
+  // основа композиции — два больших мягких пятна света
+  const blooms = [
+    { x: 90, y: 240, r: 420, c: "212, 96, 108", a: 0.16 },
+    { x: 450, y: 700, r: 340, c: "150, 62, 118", a: 0.12 },
+    { x: 250, y: 1010, r: 380, c: "120, 40, 58", a: 0.14 },
+  ];
+  for (const b of blooms) {
+    const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r);
+    g.addColorStop(0, `rgba(${b.c}, ${b.a})`);
+    g.addColorStop(0.5, `rgba(${b.c}, ${b.a * 0.45})`);
+    g.addColorStop(1, `rgba(${b.c}, 0)`);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, DESIGN.w, DESIGN.h);
+  }
+
+  /* Светящаяся линия: три прохода — широкий ореол, средний, яркое ядро.
+     Именно так на живых обоях получается «неон в дымке», а не плоская черта. */
+  const glowing = (path, { w = 3, hue = "255, 168, 186", a = 0.5 } = {}) => {
+    ctx.save();
+    ctx.lineCap = "round";
+    const passes = [
+      { wid: w * 14, alpha: a * 0.16, blur: 26 },
+      { wid: w * 5.5, alpha: a * 0.34, blur: 11 },
+      { wid: w * 1.9, alpha: a * 0.6, blur: 4 },
+      { wid: w * 0.85, alpha: a * 1.0, blur: 0 },
+    ];
+    for (const pass of passes) {
+      ctx.filter = pass.blur ? `blur(${pass.blur}px)` : "none";
+      ctx.strokeStyle = `rgba(${hue}, ${pass.alpha})`;
+      ctx.lineWidth = pass.wid;
+      ctx.stroke(path);
+    }
+    ctx.restore();
+  };
+
+  // центральная «петля» — из неё часы на блокировке читаются как на стекле
+  const loop = new Path2D();
+  loop.moveTo(-60, 780);
+  loop.bezierCurveTo(150, 470, 380, 1010, 620, 590);
+  loop.bezierCurveTo(700, 470, 610, 330, 480, 380);
+  glowing(loop, { w: 3.2, a: 0.62 });
+
+  // вторая, более тонкая дуга сверху — даёт глубину и «второй план»
+  const upper = new Path2D();
+  upper.moveTo(-40, 300);
+  upper.bezierCurveTo(120, 120, 300, 250, 410, 90);
+  upper.bezierCurveTo(470, 10, 560, 30, 590, 120);
+  glowing(upper, { w: 1.7, hue: "214, 176, 236", a: 0.36 });
+
+  // третья — короткая дуга снизу справа, едва заметная
+  const lower = new Path2D();
+  lower.moveTo(360, 1180);
+  lower.bezierCurveTo(390, 1010, 520, 980, 600, 860);
+  glowing(lower, { w: 2.4, hue: "255, 132, 150", a: 0.3 });
+
+  // пыль: редкие точки, как в референсе градиентов
+  let seed = 20261120;
+  const rnd = () => {
+    seed = (seed * 1664525 + 1013904223) % 4294967296;
+    return seed / 4294967296;
+  };
+  for (let i = 0; i < 90; i += 1) {
+    const x = rnd() * DESIGN.w;
+    const y = rnd() * DESIGN.h;
+    const r = rnd() * 1.5 + 0.35;
+    const a = rnd() * 0.4 + 0.06;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255, 224, 228, ${a})`;
+    ctx.fill();
+  }
+
+  // зерно: живые обои не идеально гладкие. Рисуем один раз в отдельный холст,
+  // иначе 560 000 пикселей пересчитывались бы при каждой перерисовке экрана.
+  if (!grainCanvas) {
+    grainCanvas = document.createElement("canvas");
+    grainCanvas.width = DESIGN.w;
+    grainCanvas.height = DESIGN.h;
+    const gctx = grainCanvas.getContext("2d");
+    const grain = gctx.createImageData(DESIGN.w, DESIGN.h);
+    const data = grain.data;
+    for (let i = 0; i < data.length; i += 4) {
+      const n = 118 + Math.random() * 46;
+      data[i] = n;
+      data[i + 1] = n;
+      data[i + 2] = n;
+      data[i + 3] = 8;
+    }
+    gctx.putImageData(grain, 0, 0);
+  }
+  ctx.save();
+  ctx.globalCompositeOperation = "overlay";
+  ctx.drawImage(grainCanvas, 0, 0);
+  ctx.restore();
+
+  // мягкое затемнение снизу: там живут уведомления и подсказка
+  const veil = ctx.createLinearGradient(0, DESIGN.h * 0.6, 0, DESIGN.h);
+  veil.addColorStop(0, "rgba(6, 4, 8, 0)");
+  veil.addColorStop(1, "rgba(6, 4, 8, 0.74)");
+  ctx.fillStyle = veil;
+  ctx.fillRect(0, 0, DESIGN.w, DESIGN.h);
+}
+
+function drawIsland(ctx, state) {
+  const w = state.islandW;
+  const h = state.islandH;
+  const x = DESIGN.w / 2 - w / 2;
+  const y = ISLAND.top;
+
+  roundRect(ctx, x, y, w, h, h / 2);
+  ctx.fillStyle = COLOR.island;
+  ctx.fill();
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.06)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  const camX = x + w - 27;
+  const camY = y + h / 2;
+  ctx.beginPath();
+  ctx.arc(camX, camY, 6.6, 0, Math.PI * 2);
+  ctx.fillStyle = "#141c2c";
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(camX - 2, camY - 2, 2.2, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(120, 170, 255, 0.5)";
+  ctx.fill();
+
+  if (state.mode === "active") {
+    const pulse = 0.45 + 0.35 * Math.abs(Math.sin(state.phase * 1.6));
+    ctx.beginPath();
+    ctx.arc(x + 30, camY, 7, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(48, 209, 88, ${pulse})`;
+    ctx.fill();
+  }
+}
+
+/** Значок включённого VPN в строке состояния. */
+/** Значок VPN в строке состояния: справа, крупнее системных иконок. */
+function drawVpn(ctx) {
+  const w = 56;
+  const h = 30;
+  const x = 341; // справа, сразу за островом и перед иконками сети
+  const y = 53;
+
+  roundRect(ctx, x, y, w, h, h / 2);
+  ctx.fillStyle = "rgba(126, 228, 255, 0.16)";
+  ctx.fill();
+  ctx.strokeStyle = "rgba(126, 228, 255, 0.32)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.save();
+  ctx.translate(x + 15, y + h / 2);
+  ctx.scale(0.56, 0.56);
+  ctx.translate(-12, -12);
+  ctx.fillStyle = COLOR.vpn;
+  ctx.fill(shield);
+  ctx.restore();
+
+  ctx.fillStyle = COLOR.vpn;
+  ctx.font = "700 12px 'JetBrains Mono', monospace";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText("VPN", x + 26, y + h / 2 + 0.5);
+  ctx.textBaseline = "alphabetic";
+}
+
+function drawStatusBar(ctx, state) {
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = COLOR.text;
+  ctx.font = "600 26px 'Golos Text', sans-serif";
+  ctx.fillText(liveClock(), 38, 78);
+
+  drawVpn(ctx);
+
+  // соты: правый край 405, чтобы не наезжать на Wi-Fi
+  const bars = [5, 9, 13, 17];
+  const sx = 403;
+  bars.forEach((h, i) => {
+    roundRect(ctx, sx + i * 6.5, 72 - h, 4.6, h, 1.8);
+    ctx.fillStyle = "rgba(243, 246, 251, 0.9)";
+    ctx.fill();
+  });
+
+  // Wi-Fi: центр 430, дуги до 445 — до батареи остаётся 13 px
+  const wx = 440;
+  ctx.strokeStyle = "rgba(243, 246, 251, 0.9)";
+  ctx.lineWidth = 2.6;
+  ctx.lineCap = "round";
+  for (let i = 0; i < 2; i += 1) {
+    ctx.beginPath();
+    ctx.arc(wx, 72, 6.5 + i * 6, Math.PI * 1.22, Math.PI * 1.78);
+    ctx.stroke();
+  }
+  ctx.beginPath();
+  ctx.arc(wx, 71, 1.8, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(243, 246, 251, 0.9)";
+  ctx.fill();
+
+  const bx = 462;
+  const by = 57;
+  ctx.strokeStyle = "rgba(243, 246, 251, 0.5)";
+  ctx.lineWidth = 2;
+  roundRect(ctx, bx, by, 26, 15, 4.5);
+  ctx.stroke();
+  roundRect(ctx, bx + 3, by + 3, 17, 9, 2.6);
+  ctx.fillStyle = "rgba(243, 246, 251, 0.9)";
+  ctx.fill();
+  roundRect(ctx, bx + 28, by + 5, 2.4, 5.5, 1.2);
+  ctx.fillStyle = "rgba(243, 246, 251, 0.5)";
+  ctx.fill();
+}
+
+function drawContact(ctx, state) {
+  const cx = DESIGN.w / 2;
+  const cy = 302;
+  const r = 92;
+
+  const grad = ctx.createLinearGradient(cx - r, cy - r, cx + r, cy + r);
+  grad.addColorStop(0, "rgba(178, 104, 116, 0.34)");
+  grad.addColorStop(1, "rgba(120, 58, 74, 0.26)");
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.14)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.fillStyle = "rgba(243, 246, 251, 0.92)";
+  ctx.font = "600 64px 'Sofia Sans Extra Condensed', sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("?", cx, cy + 24);
+
+  ctx.fillStyle = COLOR.text;
+  ctx.font = "600 44px 'Sofia Sans Extra Condensed', sans-serif";
+  ctx.fillText(state.name, cx, 456);
+
+  ctx.fillStyle = "rgba(240, 245, 252, 0.92)";
+  ctx.font = "500 27px 'JetBrains Mono', monospace";
+  ctx.fillText(state.number, cx, 500);
+
+  ctx.fillStyle = COLOR.muted;
+  ctx.font = "400 20px 'Golos Text', sans-serif";
+  ctx.fillText("мобильный", cx, 534);
+
+  if (state.mode !== "incoming") {
+    ctx.fillStyle = "rgba(243, 246, 251, 0.9)";
+    ctx.font = "500 26px 'JetBrains Mono', monospace";
+    ctx.fillText(state.timer, cx, 590);
+  }
+  ctx.textAlign = "left";
+}
+
+function drawButton(ctx, id, hover) {
+  const b = BUTTONS[id];
+  const isDecline = id !== "answer";
+  const fill = isDecline ? COLOR.decline : COLOR.accept;
+
+  if (hover) {
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.r + 9, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.10)";
+    ctx.fill();
+  }
+
+  const grad = ctx.createLinearGradient(b.x, b.y - b.r, b.x, b.y + b.r);
+  grad.addColorStop(0, fill);
+  grad.addColorStop(1, isDecline ? "#d32a20" : "#22a844");
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  drawHandset(ctx, b.x, b.y, b.r * 0.78, isDecline ? Math.PI * 0.75 : 0);
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(243, 246, 251, 0.92)";
+  ctx.font = "400 21px 'Golos Text', sans-serif";
+  ctx.fillText(b.label, b.x, b.y + b.r + 34);
+  ctx.textAlign = "left";
+}
+
+function wrapText(ctx, text, maxWidth) {
+  const words = String(text).split(" ");
+  const lines = [];
+  let line = "";
+  for (const word of words) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (ctx.measureText(candidate).width > maxWidth && line) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = candidate;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+function drawGlyph(ctx, kind, cx, cy, size, color) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(size / 24, size / 24);
+  ctx.translate(-12, -12);
+  ctx.fillStyle = color;
+  if (kind === "telegram") {
+    ctx.fill(new Path2D(PLANE));
+  } else if (kind === "sms") {
+    roundRect(ctx, 4, 5, 16, 12, 4.5);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(8.5, 15.5);
+    ctx.lineTo(8.5, 20);
+    ctx.lineTo(13.5, 16.4);
+    ctx.fill();
+  } else {
+    ctx.lineWidth = 2.4;
+    ctx.strokeStyle = color;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.stroke(handset);
+  }
+  ctx.restore();
+}
+
+/** Карточка уведомления: матовое стекло поверх обоев, как в iOS 26. */
+function drawNotificationCard(ctx, card, x, y, w, h, alpha = 1, maxLines = 2) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
+  roundRect(ctx, x, y, w, h, 34);
+  // подложка: тёмная плотная база + светлое стекло сверху.
+  // Так текст читается поверх любых обоев, а не просвечивает лентами.
+  const glass = ctx.createLinearGradient(x, y, x, y + h);
+  glass.addColorStop(0, "rgba(44, 21, 28, 0.66)");
+  glass.addColorStop(1, "rgba(28, 14, 20, 0.62)");
+  ctx.fillStyle = glass;
+  ctx.fill();
+  const sheen = ctx.createLinearGradient(x, y, x, y + h);
+  sheen.addColorStop(0, "rgba(255, 240, 242, 0.2)");
+  sheen.addColorStop(1, "rgba(255, 236, 238, 0.08)");
+  ctx.fillStyle = sheen;
+  ctx.fill();
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  const icon = 56;
+  const ix = x + 20;
+  const iy = y + 20;
+  roundRect(ctx, ix, iy, icon, icon, 16);
+  const tint = ctx.createLinearGradient(ix, iy, ix, iy + icon);
+  tint.addColorStop(0, card.color);
+  tint.addColorStop(1, "rgba(8, 6, 10, 0.25)");
+  ctx.fillStyle = card.color;
+  ctx.fill();
+  ctx.fillStyle = tint;
+  ctx.globalAlpha = alpha * 0.35;
+  ctx.fill();
+  ctx.globalAlpha = alpha;
+  drawGlyph(ctx, card.app, ix + icon / 2, iy + icon / 2, 30, "rgba(255, 255, 255, 0.96)");
+
+  const tx = ix + icon + 16;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.textAlign = "left";
+  ctx.fillStyle = "rgba(255, 244, 246, 0.96)";
+  ctx.font = "600 21px 'Golos Text', sans-serif";
+  const timeWidth = 58;
+  const title = card.title;
+  let shown = title;
+  while (ctx.measureText(shown).width > w - (tx - x) - timeWidth && shown.length > 3) {
+    shown = shown.slice(0, -1);
+  }
+  if (shown !== title) shown = `${shown.trimEnd()}…`;
+  ctx.fillText(shown, tx, y + 40);
+
+  ctx.textAlign = "right";
+  ctx.fillStyle = "rgba(255, 238, 240, 0.72)";
+  ctx.font = "500 17px 'Golos Text', sans-serif";
+  ctx.fillText(card.time, x + w - 20, y + 39);
+
+  ctx.textAlign = "left";
+  ctx.fillStyle = "rgba(255, 246, 248, 0.9)";
+  ctx.font = "400 19px 'Golos Text', sans-serif";
+  const maxWidth = w - (tx - x) - 26;
+  ctx.save();
+  roundRect(ctx, x, y, w, h, 34);
+  ctx.clip();
+  wrapText(ctx, card.text, maxWidth)
+    .slice(0, maxLines)
+    .forEach((line, i) => ctx.fillText(line, tx, y + 74 + i * 27));
+  ctx.restore();
+
+  ctx.restore();
+}
+
+function drawNotifications(ctx, state) {
+  const w = 440;
+  const x = (DESIGN.w - w) / 2;
+  const h = 132;
+  const gap = 14;
+  let y = 420;
+
+  const list = [...(state.smsHistory ?? []), ...(state.notifications ?? [])].slice(0, 3);
+  list.forEach((card) => {
+    drawNotificationCard(ctx, card, x, y, w, h);
+    y += h + gap;
+  });
+}
+
+/** Слой блокировки: часы, дата, уведомления, домашний индикатор.
+    Рисуется на прозрачном фоне — при свайпе он уезжает вверх как меш,
+    перерисовывать его в каждом кадре не нужно. */
+function drawLockLayer(ctx, state) {
+  ctx.setTransform(TEXTURE_SCALE, 0, 0, TEXTURE_SCALE, 0, 0);
+  ctx.clearRect(0, 0, DESIGN.w, DESIGN.h);
+  drawStatusBar(ctx, state);
+
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = "rgba(255, 238, 240, 0.72)";
+  ctx.font = "500 26px 'Golos Text', sans-serif";
+  ctx.fillText(liveDate(), DESIGN.w / 2, 192);
+
+  ctx.fillStyle = "rgba(255, 248, 249, 0.97)";
+  ctx.font = "400 160px 'Golos Text', sans-serif";
+  if ("letterSpacing" in ctx) ctx.letterSpacing = "-4px";
+  ctx.fillText(liveClock(), DESIGN.w / 2, 338);
+  if ("letterSpacing" in ctx) ctx.letterSpacing = "0px";
+
+  drawNotifications(ctx, state);
+
+  roundRect(ctx, DESIGN.w / 2 - 84, DESIGN.h - 40, 168, 6, 3);
+  ctx.fillStyle = "rgba(255, 246, 247, 0.62)";
+  ctx.fill();
+
+}
+
+/** СМС от того номера, который называл «оператор»: выезжает сверху баннером. */
+function drawSmsBanner(ctx, state) {
+  const sms = state.sms;
+  if (!sms) return;
+  const age = performance.now() - sms.at;
+  const inflow = Math.min(1, age / 380);
+  const ease = 1 - Math.pow(1 - inflow, 3);
+  const outflow = age > 7000 ? Math.min(1, (age - 7000) / 320) : 0;
+  const y = ISLAND.top + ISLAND.h + 16 - (1 - ease) * 190 - outflow * 190;
+  const alpha = (1 - outflow) * Math.min(1, ease * 1.2);
+
+  drawNotificationCard(
+    ctx,
+    { app: "sms", color: "#30d158", title: `СМС · ${sms.from}`, text: sms.text, time: "сейчас" },
+    (DESIGN.w - 452) / 2,
+    y,
+    452,
+    178,
+    alpha,
+    3,
+  );
+}
+
+function drawScreen(ctx, state) {
+  ctx.setTransform(TEXTURE_SCALE, 0, 0, TEXTURE_SCALE, 0, 0);
+  ctx.clearRect(0, 0, DESIGN.w, DESIGN.h);
+
+  ctx.save();
+  roundRect(ctx, 0, 0, DESIGN.w, DESIGN.h, 74);
+  ctx.clip();
+
+  drawWallpaper(ctx);
+
+  // во время вызова обои приглушены — как размытый фон на экране звонка iOS
+  if (state.view !== "locked") {
+    const veil = ctx.createLinearGradient(0, 0, 0, DESIGN.h);
+    veil.addColorStop(0, "rgba(10, 6, 10, 0.56)");
+    veil.addColorStop(0.5, "rgba(10, 6, 10, 0.34)");
+    veil.addColorStop(1, "rgba(8, 5, 9, 0.62)");
+    ctx.fillStyle = veil;
+    ctx.fillRect(0, 0, DESIGN.w, DESIGN.h);
+  }
+
+  // на блокировке статус-бар живёт в слое: при свайпе он уезжает вместе с часами
+  if (state.view !== "locked") drawStatusBar(ctx, state);
+
+  if (state.view === "locked") {
+    // поверх обоев ничего не рисуем: контент блокировки живёт в отдельном слое
+  } else {
+    drawContact(ctx, state);
+
+    if (state.mode === "incoming") {
+      drawButton(ctx, "decline", state.hover === "decline");
+      drawButton(ctx, "answer", state.hover === "answer");
+    } else if (state.mode === "active") {
+      drawButton(ctx, "hangup", state.hover === "hangup");
+    } else {
+      ctx.textAlign = "center";
+      ctx.fillStyle = "rgba(214, 198, 202, 0.75)";
+      ctx.font = "400 22px 'Golos Text', sans-serif";
+      ctx.fillText("вызов завершён", DESIGN.w / 2, 900);
+      ctx.textAlign = "left";
+    }
+  }
+
+  ctx.restore();
+
+  // экран «утоплен» в корпус: тень по краям + диагональный блик стекла.
+  // Всё это режем по скруглению, иначе в углах остаются тёмные прямоугольные уголки.
+  ctx.save();
+  roundRect(ctx, 0, 0, DESIGN.w, DESIGN.h, 74);
+  ctx.clip();
+
+  const shade = ctx.createRadialGradient(
+    DESIGN.w / 2,
+    DESIGN.h * 0.45,
+    DESIGN.w * 0.32,
+    DESIGN.w / 2,
+    DESIGN.h * 0.5,
+    DESIGN.w * 0.98,
+  );
+  shade.addColorStop(0, "rgba(0, 0, 0, 0)");
+  shade.addColorStop(1, "rgba(0, 0, 0, 0.46)");
+  ctx.fillStyle = shade;
+  ctx.fillRect(0, 0, DESIGN.w, DESIGN.h);
+
+  ctx.save();
+  ctx.translate(DESIGN.w * 0.1, -DESIGN.h * 0.12);
+  ctx.rotate(-0.36);
+  const sheen = ctx.createLinearGradient(0, 0, 0, DESIGN.h * 1.25);
+  sheen.addColorStop(0, "rgba(255, 255, 255, 0)");
+  sheen.addColorStop(0.4, "rgba(255, 255, 255, 0.06)");
+  sheen.addColorStop(0.56, "rgba(255, 255, 255, 0.018)");
+  sheen.addColorStop(1, "rgba(255, 255, 255, 0)");
+  ctx.fillStyle = sheen;
+  ctx.fillRect(0, 0, DESIGN.w * 1.7, DESIGN.h * 1.4);
+  ctx.restore();
+  ctx.restore();
+
+  // остров рисуем поверх — он чёрный и перекрывает фон
+  drawIsland(ctx, state);
+  drawSmsBanner(ctx, state);
+}
+
+/* ── вспомогательные текстуры ────────────────────────────────────── */
+
+const APPLE =
+  "M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35" +
+  "C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8" +
+  "-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.53 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z";
+
+function makeBackTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 1097;
+  const ctx = canvas.getContext("2d");
+
+  const bg = ctx.createLinearGradient(0, 0, 512, 1097);
+  bg.addColorStop(0, "#6b3540");
+  bg.addColorStop(0.45, "#4a2129");
+  bg.addColorStop(1, "#2a1218");
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, 512, 1097);
+
+  // мягкий блик по диагонали — как у стеклянной задней панели
+  const shine = ctx.createLinearGradient(60, 40, 460, 700);
+  shine.addColorStop(0, "rgba(255, 220, 225, 0.18)");
+  shine.addColorStop(0.4, "rgba(255, 210, 215, 0.04)");
+  shine.addColorStop(1, "rgba(255, 255, 255, 0)");
+  ctx.fillStyle = shine;
+  ctx.fillRect(0, 0, 512, 1097);
+
+  // антенные полосы: тонкие светлые линии у торцов, как на настоящем корпусе
+  ctx.fillStyle = "rgba(226, 176, 182, 0.30)";
+  ctx.fillRect(120, 26, 272, 3);
+
+  ctx.fillRect(120, 1068, 272, 3);
+  ctx.fillStyle = "rgba(226, 176, 182, 0.16)";
+  ctx.fillRect(24, 150, 2.5, 40);
+  ctx.fillRect(485, 150, 2.5, 40);
+
+  // яблоко
+  ctx.save();
+  ctx.translate(256, 585);
+  ctx.scale(6.5, 6.5);
+  ctx.translate(-12, -12);
+  ctx.fillStyle = "rgba(226, 178, 184, 0.55)";
+  ctx.fill(new Path2D(APPLE));
+  ctx.restore();
+
+  // скруглённые углы панели
+  ctx.globalCompositeOperation = "destination-in";
+  roundRect(ctx, 0, 0, 512, 1097, 74);
+  ctx.fillStyle = "#fff";
+  ctx.fill();
+
+  return canvas;
+}
+
+function makeRingTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext("2d");
+  const cx = 128;
+  const cy = 128;
+
+  const glow = ctx.createRadialGradient(cx, cy, 60, cx, cy, 124);
+  glow.addColorStop(0, "rgba(90, 225, 255, 0)");
+  glow.addColorStop(0.72, "rgba(90, 225, 255, 0.16)");
+  glow.addColorStop(1, "rgba(90, 225, 255, 0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, 256, 256);
+
+  ctx.strokeStyle = "rgba(190, 250, 255, 1)";
+  ctx.lineWidth = 7;
+  ctx.beginPath();
+  ctx.arc(cx, cy, 108, 0, Math.PI * 2);
+  ctx.stroke();
+
+  return canvas;
+}
+
+function makeGlowTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext("2d");
+  const grad = ctx.createRadialGradient(128, 128, 0, 128, 128, 128);
+  grad.addColorStop(0, "rgba(186, 92, 106, 0.5)");
+  grad.addColorStop(0.35, "rgba(170, 84, 98, 0.26)");
+  grad.addColorStop(0.7, "rgba(150, 74, 88, 0.08)");
+  grad.addColorStop(1, "rgba(150, 74, 88, 0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 256, 256);
+  return canvas;
+}
+
+/* ── инициализация ───────────────────────────────────────────────── */
+
+const escapeHtml = (value) =>
+  String(value).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+
+const randomNumber = () => {
+  const d = (n) => String(Math.floor(Math.random() * 10 ** n)).padStart(n, "0");
+  return `+7 9${d(2)} ${d(3)}-${d(2)}-${d(2)}`;
+};
+
+export function initPhone() {
+  const stage = document.getElementById("phone-root");
+  const canvas = document.getElementById("phone-canvas");
+  const log = document.getElementById("phone-log");
+  const choices = document.getElementById("phone-choices");
+  const status = document.getElementById("phone-status");
+  const reset = document.getElementById("phone-reset");
+  const hint = document.getElementById("phone-hint");
+  if (!stage || !canvas || !log || !choices) return;
+
+  const isReduced = reduced();
+  let renderer;
+  try {
+    renderer = new THREE.WebGLRenderer({
+      canvas,
+      alpha: true,
+      antialias: true,
+      // ?dbg — только для покадровой проверки: без этого буфера canvas.toDataURL пуст
+      preserveDrawingBuffer: location.search.includes("dbg"),
+    });
+  } catch {
+    stage.classList.add("phone--flat");
+    return;
+  }
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
+  camera.position.set(0, 0, 5.95);
+
+  const group = new THREE.Group();
+  group.rotation.y = Math.PI; // до заставки телефон лежит «лицом вниз»
+  scene.add(group);
+
+  /* Корпус: iPhone 18 Pro Max. Габариты 17 Pro Max — 163.4 × 78.0 × 8.75 мм,
+     это отношение 78.0 / 163.4 = 0.477 (у 16 Pro Max было 0.485). */
+  const bodyW = 1.9;
+  const bodyH = 3.98;
+  const bodyR = 0.31;
+  const depth = 0.2;
+  const bevel = 0.05;
+
+  const bodyShape = new THREE.Shape();
+  bodyShape.moveTo(-bodyW / 2 + bodyR, -bodyH / 2);
+  bodyShape.lineTo(bodyW / 2 - bodyR, -bodyH / 2);
+  bodyShape.quadraticCurveTo(bodyW / 2, -bodyH / 2, bodyW / 2, -bodyH / 2 + bodyR);
+  bodyShape.lineTo(bodyW / 2, bodyH / 2 - bodyR);
+  bodyShape.quadraticCurveTo(bodyW / 2, bodyH / 2, bodyW / 2 - bodyR, bodyH / 2);
+  bodyShape.lineTo(-bodyW / 2 + bodyR, bodyH / 2);
+  bodyShape.quadraticCurveTo(-bodyW / 2, bodyH / 2, -bodyW / 2, bodyH / 2 - bodyR);
+  bodyShape.lineTo(-bodyW / 2, -bodyH / 2 + bodyR);
+  bodyShape.quadraticCurveTo(-bodyW / 2, -bodyH / 2, -bodyW / 2 + bodyR, -bodyH / 2);
+
+  const body = new THREE.Mesh(
+    new THREE.ExtrudeGeometry(bodyShape, {
+      depth,
+      bevelEnabled: true,
+      bevelSize: bevel,
+      bevelThickness: 0.045,
+      bevelSegments: 5,
+      curveSegments: 18,
+    }),
+    new THREE.MeshStandardMaterial({ color: 0x632c36, metalness: 0.94, roughness: 0.28, envMapIntensity: 1.55 }),
+  );
+  body.position.z = -depth / 2;
+  group.add(body);
+
+  /* боковые кнопки: громкость и «действие» слева, питание справа */
+  const buttonMat = new THREE.MeshStandardMaterial({ color: 0x6f3b45, metalness: 0.95, roughness: 0.32, envMapIntensity: 1.35 });
+  const sideX = bodyW / 2 + bevel;
+  const sideButton = (sign, y, h) => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.055, h, 0.085), buttonMat);
+    mesh.position.set(sign * (sideX + 0.012), y, 0);
+    group.add(mesh);
+  };
+  sideButton(-1, 0.74, 0.17); // «действие»
+  sideButton(-1, 0.4, 0.33); // громкость +
+  sideButton(-1, 0.0, 0.33); // громкость −
+  sideButton(1, 0.44, 0.55); // питание
+
+  /* экран: 1.75 × 3.75 = 0.467 */
+  const screenW = 1.75;
+  const screenH = 3.8;
+
+  const screenCanvas = document.createElement("canvas");
+  screenCanvas.width = DESIGN.w * TEXTURE_SCALE;
+  screenCanvas.height = DESIGN.h * TEXTURE_SCALE;
+  const ctx = screenCanvas.getContext("2d");
+  const texture = new THREE.CanvasTexture(screenCanvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy() || 8);
+
+  const screenMat = new THREE.MeshBasicMaterial({
+    map: texture,
+    toneMapped: false,
+    transparent: true,
+    opacity: 0,
+  });
+  const screenGeometry = roundedPlane(screenW, screenH, (74 / DESIGN.w) * screenW);
+  const screen = new THREE.Mesh(screenGeometry, screenMat);
+  screen.position.z = depth / 2 + 0.052;
+  group.add(screen);
+
+  /* Слой блокировки: часы и уведомления лежат отдельной текстурой.
+     При свайпе мы двигаем этот меш и гасим прозрачность — ни одной
+     перерисовки холста, поэтому жест идёт ровно, без просадок. */
+  const layerCanvas = document.createElement("canvas");
+  layerCanvas.width = DESIGN.w * TEXTURE_SCALE;
+  layerCanvas.height = DESIGN.h * TEXTURE_SCALE;
+  const lctx = layerCanvas.getContext("2d");
+  const layerTexture = new THREE.CanvasTexture(layerCanvas);
+  layerTexture.colorSpace = THREE.SRGBColorSpace;
+  layerTexture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy() || 8);
+
+  const layerMat = new THREE.MeshBasicMaterial({
+    map: layerTexture,
+    transparent: true,
+    toneMapped: false,
+    depthWrite: false,
+    opacity: 1,
+  });
+  const lockLayer = new THREE.Mesh(roundedPlane(screenW, screenH, (74 / DESIGN.w) * screenW), layerMat);
+  lockLayer.position.z = depth / 2 + 0.068;
+  // Слой уезжает за верхний край экрана, поэтому режем его плоскостью —
+  // иначе часы и карточки «висели» бы над корпусом.
+  renderer.localClippingEnabled = true;
+  /* Плоскость обрезания — в мировых координатах и по мировому верхнему краю экрана:
+     иначе при повороте модели слой блокировки «вылезает» на корпус. */
+  const clipPlane = new THREE.Plane();
+  const clipNormal = new THREE.Vector3();
+  const clipPoint = new THREE.Vector3();
+  const updateClip = () => {
+    clipNormal.set(0, -1, 0).transformDirection(group.matrixWorld).normalize();
+    clipPoint.set(0, screenH / 2 - 0.012, depth / 2 + 0.07).applyMatrix4(group.matrixWorld);
+    clipPlane.setFromNormalAndCoplanarPoint(clipNormal, clipPoint);
+  };
+  layerMat.clippingPlanes = [clipPlane];
+  group.add(lockLayer);
+
+  /* ── Динамический остров отдельным мешем ────────────────────────────
+     Он должен быть поверх плашки разблокировки: она уезжает вверх, и если
+     остров нарисован только в текстуре экрана, плашка проходит над ним.
+     Меш повторяет капсулу, камеру и зелёную точку звонка. */
+  const islandCanvas = document.createElement("canvas");
+  const islandTexture = new THREE.CanvasTexture(islandCanvas);
+  islandTexture.colorSpace = THREE.SRGBColorSpace;
+  // размеры передаём аргументами: state объявляется позже, обращаться к нему нельзя
+  const paintIsland = (w = ISLAND.w, h = ISLAND.h) => {
+    const k = 3;
+    islandCanvas.width = Math.round(w * k);
+    islandCanvas.height = Math.round(h * k);
+    const ic = islandCanvas.getContext("2d");
+    ic.setTransform(k, 0, 0, k, 0, 0);
+    ic.clearRect(0, 0, w, h);
+    roundRect(ic, 0, 0, w, h, h / 2);
+    ic.fillStyle = "#000000";
+    ic.fill();
+    ic.strokeStyle = "rgba(255, 255, 255, 0.06)";
+    ic.lineWidth = 1;
+    ic.stroke();
+    // камера Face ID справа
+    const camX = w - 27;
+    const camY = h / 2;
+    ic.beginPath();
+    ic.arc(camX, camY, 6.6, 0, Math.PI * 2);
+    ic.fillStyle = "#141c2c";
+    ic.fill();
+    ic.beginPath();
+    ic.arc(camX - 2, camY - 2, 2.2, 0, Math.PI * 2);
+    ic.fillStyle = "rgba(120, 170, 255, 0.5)";
+    ic.fill();
+    islandTexture.needsUpdate = true;
+  };
+  paintIsland();
+
+  const islandMat = new THREE.MeshBasicMaterial({
+    map: islandTexture,
+    transparent: true,
+    depthWrite: false,
+  });
+  const islandMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), islandMat);
+  islandMesh.position.z = depth / 2 + 0.074;
+  group.add(islandMesh);
+
+  // зелёная точка «идёт звонок» — отдельный меш, чтобы пульсировать без перерисовки
+  const islandDot = new THREE.Mesh(
+    new THREE.CircleGeometry(0.026, 24),
+    new THREE.MeshBasicMaterial({ color: 0x30d158, transparent: true, opacity: 0.9, depthWrite: false }),
+  );
+  islandDot.position.z = depth / 2 + 0.075;
+  islandDot.visible = false;
+  group.add(islandDot);
+
+  const layoutIsland = (w = ISLAND.w, h = ISLAND.h) => {
+    islandMesh.scale.set((1.75 * w) / DESIGN.w, (3.8 * h) / DESIGN.h, 1);
+    const cy = screenH / 2 - ((ISLAND.top + h / 2) / DESIGN.h) * screenH;
+    islandMesh.position.y = cy;
+    const dotX = -screenW / 2 + ((DESIGN.w / 2 - w / 2 + 30) / DESIGN.w) * screenW;
+    islandDot.position.set(dotX, cy, depth / 2 + 0.075);
+  };
+  layoutIsland();
+
+  /* Стекло экрана — отдельный слой на своём расстоянии от картинки.
+     За счёт перспективы при повороте блик от студии едет по стеклу
+     отдельно от интерфейса: экран перестаёт быть плоской наклейкой. */
+  const glassRadius = (74 / DESIGN.w) * screenW;
+  const gw = screenW / 2;
+  const gh = screenH / 2;
+  const glassShape = new THREE.Shape();
+  glassShape.moveTo(-gw + glassRadius, -gh);
+  glassShape.lineTo(gw - glassRadius, -gh);
+  glassShape.quadraticCurveTo(gw, -gh, gw, -gh + glassRadius);
+  glassShape.lineTo(gw, gh - glassRadius);
+  glassShape.quadraticCurveTo(gw, gh, gw - glassRadius, gh);
+  glassShape.lineTo(-gw + glassRadius, gh);
+  glassShape.quadraticCurveTo(-gw, gh, -gw, gh - glassRadius);
+  glassShape.lineTo(-gw, -gh + glassRadius);
+  glassShape.quadraticCurveTo(-gw, -gh, -gw + glassRadius, -gh);
+
+  const screenGlass = new THREE.Mesh(
+    new THREE.ShapeGeometry(glassShape, 24),
+    new THREE.MeshPhysicalMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.13,
+      roughness: 0.05,
+      metalness: 0,
+      clearcoat: 1,
+      clearcoatRoughness: 0.04,
+      envMapIntensity: 1.9,
+      depthWrite: false,
+    }),
+  );
+  screenGlass.position.z = depth / 2 + 0.088;
+  group.add(screenGlass);
+
+  /* задняя панель: стекло, яблоко, блок камер */
+  const backGroup = new THREE.Group();
+  backGroup.rotation.y = Math.PI;
+  backGroup.position.z = -(depth / 2 + bevel + 0.002);
+  group.add(backGroup);
+
+  const backTexture = new THREE.CanvasTexture(makeBackTexture());
+  backTexture.colorSpace = THREE.SRGBColorSpace;
+  const backPanel = new THREE.Mesh(
+    new THREE.PlaneGeometry(screenW + 0.14, screenH + 0.16),
+    new THREE.MeshStandardMaterial({
+      map: backTexture,
+      transparent: true,
+      roughness: 0.52,
+      metalness: 0.06,
+      envMapIntensity: 1.12,
+    }),
+  );
+  backGroup.add(backPanel);
+
+  // Блок камер — по фото владельца: скруглённая площадка в левом верхнем углу,
+  // три объектива треугольником (два слева друг под другом, третий правее),
+  // справа в той же площадке вспышка и LiDAR.
+  const plateShape = new THREE.Shape();
+  // фото: площадка 208 × 174 px при корпусе 230 × 503 → 0.90 ширины, 0.35 высоты
+  const pw = 1.7;
+  const ph = 1.35;
+  const pr = 0.36;
+  plateShape.moveTo(-pw / 2 + pr, -ph / 2);
+  plateShape.lineTo(pw / 2 - pr, -ph / 2);
+  plateShape.quadraticCurveTo(pw / 2, -ph / 2, pw / 2, -ph / 2 + pr);
+  plateShape.lineTo(pw / 2, ph / 2 - pr);
+  plateShape.quadraticCurveTo(pw / 2, ph / 2, pw / 2 - pr, ph / 2);
+  plateShape.lineTo(-pw / 2 + pr, ph / 2);
+  plateShape.quadraticCurveTo(-pw / 2, ph / 2, -pw / 2, ph / 2 - pr);
+  plateShape.lineTo(-pw / 2, -ph / 2 + pr);
+  plateShape.quadraticCurveTo(-pw / 2, -ph / 2, -pw / 2 + pr, -ph / 2);
+
+  const panelW = screenW + 0.14;
+  const panelH = screenH + 0.16;
+  const plateX = -panelW / 2 + 0.05 + pw / 2;
+  const plateY = panelH / 2 - 0.06 - ph / 2;
+
+  const camPlate = new THREE.Mesh(
+    new THREE.ExtrudeGeometry(plateShape, {
+      depth: 0.045,
+      bevelEnabled: true,
+      bevelSize: 0.016,
+      bevelThickness: 0.018,
+      bevelSegments: 3,
+      curveSegments: 14,
+    }),
+    new THREE.MeshStandardMaterial({ color: 0x7a4550, metalness: 0.32, roughness: 0.55, envMapIntensity: 0.85 }),
+  );
+  camPlate.position.set(plateX, plateY, 0.022);
+  backGroup.add(camPlate);
+
+  // светлый кант по контуру площадки — как фаска на живом корпусе
+  const plateEdge = new THREE.Mesh(
+    new THREE.ExtrudeGeometry(plateShape, {
+      depth: 0.03,
+      bevelEnabled: true,
+      bevelSize: 0.026,
+      bevelThickness: 0.014,
+      bevelSegments: 2,
+      curveSegments: 14,
+    }),
+    new THREE.MeshStandardMaterial({ color: 0x4d2630, metalness: 0.55, roughness: 0.5, envMapIntensity: 0.8 }),
+  );
+  plateEdge.scale.set(1.018, 1.022, 1);
+  plateEdge.position.set(plateX, plateY, 0.012);
+  backGroup.add(plateEdge);
+
+  /* ── Объектив по фото владельца ──────────────────────────────────────
+     На снимке 149 × 134 видно устройство «глаза»: широкое светлое
+     металлическое кольцо (внешний диаметр 58 px, стекло 46 px → 0.79),
+     тёмный зазор между кольцом и стеклом, тёмное стекло с крупным
+     рассеянным бликом-полумесяцем и маленькой звёздочкой-точкой.
+     Плоский чёрный круг без этого — брак, а не стилизация. */
+  const LENS = 0.258;
+  /* Стекло объектива: тёмное, почти чёрное, с сильным отражением.
+     Металличность низкая — иначе купол заливается цветом окружения
+     и вместо «глубины» получается розовый пузырь, как на первом проходе. */
+  const lensGlass = new THREE.MeshPhysicalMaterial({
+    color: 0x060a12,
+    metalness: 0.35,
+    roughness: 0.14,
+    clearcoat: 1,
+    clearcoatRoughness: 0.08,
+    envMapIntensity: 0.5,
+    reflectivity: 0.75,
+  });
+  /* внутренняя оправа: на фото внутри стекла видно ещё одно тёмное кольцо */
+  const lensInnerRing = new THREE.MeshStandardMaterial({
+    color: 0x12171d,
+    metalness: 0.5,
+    roughness: 0.4,
+    envMapIntensity: 0.6,
+  });
+  const lensRimSide = new THREE.MeshStandardMaterial({
+    color: 0x7a4550,
+    metalness: 0.85,
+    roughness: 0.3,
+    envMapIntensity: 1.2,
+  });
+  const lensRim = new THREE.MeshStandardMaterial({
+    color: 0x8c4a52,
+    metalness: 0.92,
+    roughness: 0.24,
+    envMapIntensity: 1.35,
+  });
+  const lensRimInner = new THREE.MeshStandardMaterial({
+    color: 0x2a1a21,
+    metalness: 0.75,
+    roughness: 0.42,
+    envMapIntensity: 0.6,
+  });
+  const lensGap = new THREE.MeshStandardMaterial({
+    color: 0x1b0e13,
+    metalness: 0.2,
+    roughness: 0.9,
+    envMapIntensity: 0.4,
+  });
+
+  /* Блик-полумесяц и звёздочка — рисуем текстурой: у настоящего объектива
+     блик мягкий и рваный, а не идеальный кружок. */
+  const makeGlareTexture = () => {
+    const size = 256;
+    const c = document.createElement("canvas");
+    c.width = size;
+    c.height = size;
+    const g = c.getContext("2d");
+
+    // крупный рассеянный блик сверху-слева
+    const halo = g.createRadialGradient(size * 0.36, size * 0.3, 2, size * 0.36, size * 0.3, size * 0.34);
+    halo.addColorStop(0, "rgba(226, 238, 255, 0.92)");
+    halo.addColorStop(0.35, "rgba(150, 182, 226, 0.42)");
+    halo.addColorStop(1, "rgba(90, 120, 180, 0)");
+    g.fillStyle = halo;
+    g.fillRect(0, 0, size, size);
+
+    // «полумесяц» — светлая дуга по верхнему краю стекла
+    g.save();
+    g.beginPath();
+    g.ellipse(size * 0.42, size * 0.28, size * 0.3, size * 0.16, -0.5, 0, Math.PI * 2);
+    g.clip();
+    const arc = g.createLinearGradient(0, size * 0.05, 0, size * 0.5);
+    arc.addColorStop(0, "rgba(200, 220, 255, 0.55)");
+    arc.addColorStop(1, "rgba(200, 220, 255, 0)");
+    g.fillStyle = arc;
+    g.fillRect(0, 0, size, size);
+    g.restore();
+
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  };
+  const glareTexture = makeGlareTexture();
+  const starMat = new THREE.MeshBasicMaterial({
+    color: 0xf2f8ff,
+    transparent: true,
+    opacity: 0.9,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const glareMat = new THREE.MeshBasicMaterial({
+    map: glareTexture,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    opacity: 0.42,
+  });
+
+  const lensLip = new THREE.MeshStandardMaterial({
+    color: 0xd8c3bf,
+    metalness: 0.96,
+    roughness: 0.2,
+    envMapIntensity: 1.6,
+  });
+  const coldMat = new THREE.MeshBasicMaterial({
+    color: 0x9cc4ff,
+    transparent: true,
+    opacity: 0.14,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+
+  const lensPodium = new THREE.MeshStandardMaterial({
+    color: 0x6d3c47,
+    metalness: 0.36,
+    roughness: 0.5,
+    envMapIntensity: 0.85,
+  });
+
+  /* ── Объектив ────────────────────────────────────────────────────────
+     Собран послойно, как настоящий: приподнятая бобышка на площадке →
+     широкое металлическое кольцо со скосом → тёмный зазор → стакан →
+     стекло-мениск с бликами. Все тела вращения — 128 сегментов, чтобы
+     на близком плане не было граней. Профиль снят с фото владельца. */
+  const SEG = 128;
+  const cylinder = (rTop, rBottom, height, mat) => {
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(rTop, rBottom, height, SEG), mat);
+    mesh.rotation.x = Math.PI / 2;
+    return mesh;
+  };
+
+  const lens = (x, y, radius = LENS) => {
+    const r = radius;
+
+    // 1. бобышка площадки — объектив стоит на небольшом выступе
+    const podium = cylinder(r * 1.14, r * 1.17, 0.026, lensPodium);
+    podium.position.set(x, y, 0.07);
+    backGroup.add(podium);
+
+    // 2. внешняя стенка кольца: бордовый металл, чуть сужается вверх
+    const ringSide = cylinder(r * 1.0, r * 1.025, 0.062, lensRimSide);
+    ringSide.position.set(x, y, 0.114);
+    backGroup.add(ringSide);
+
+    // 3. скос к торцу — именно он читается как «толстое» кольцо на фото
+    const ringBevel = cylinder(r * 0.9, r * 1.0, 0.016, lensRim);
+    ringBevel.position.set(x, y, 0.153);
+    backGroup.add(ringBevel);
+
+    // 4. торцевая плоскость кольца вокруг стекла
+    const ringTop = cylinder(r * 0.705, r * 0.9, 0.006, lensRim);
+    ringTop.position.set(x, y, 0.164);
+    backGroup.add(ringTop);
+
+    // 5. светлая металлическая окантовка по внешнему краю
+    const lip = new THREE.Mesh(new THREE.TorusGeometry(r * 0.99, r * 0.006, 10, SEG), lensLip);
+    lip.position.set(x, y, 0.146);
+    backGroup.add(lip);
+
+    // 6. тёмный зазор между кольцом и стеклом
+    const gap = cylinder(r * 0.715, r * 0.715, 0.05, lensGap);
+    gap.position.set(x, y, 0.15);
+    backGroup.add(gap);
+
+    // 7. стекло: плоский диск + пологий мениск сверху
+    const glassDisc = cylinder(r * 0.7, r * 0.7, 0.026, lensGlass);
+    glassDisc.position.set(x, y, 0.166);
+    backGroup.add(glassDisc);
+
+    // 8. тонкое тёмное кольцо оправы в глубине стекла
+    const innerRing = new THREE.Mesh(new THREE.TorusGeometry(r * 0.56, r * 0.012, 12, SEG), lensInnerRing);
+    innerRing.position.set(x, y, 0.181);
+    backGroup.add(innerRing);
+
+    // 9. блики: мягкий ореол, звёздочка, холодный отблик
+    const glare = new THREE.Mesh(new THREE.CircleGeometry(r * 0.71, SEG), glareMat);
+    glare.position.set(x, y, 0.182);
+    backGroup.add(glare);
+
+    const star = new THREE.Mesh(new THREE.CircleGeometry(r * 0.06, 24), starMat);
+    star.position.set(x - r * 0.17, y - r * 0.1, 0.184);
+    backGroup.add(star);
+
+    const cold = new THREE.Mesh(new THREE.CircleGeometry(r * 0.16, 32), coldMat);
+    cold.position.set(x + r * 0.24, y + r * 0.23, 0.183);
+    backGroup.add(cold);
+  };
+  lens(plateX - 0.462, plateY + 0.339);
+  lens(plateX - 0.462, plateY - 0.347);
+  lens(plateX + 0.099, plateY + 0.017);
+
+  const flashCanvas = document.createElement("canvas");
+  flashCanvas.width = 128;
+  flashCanvas.height = 128;
+  const fctx = flashCanvas.getContext("2d");
+  const fg = fctx.createRadialGradient(64, 60, 4, 64, 64, 62);
+  fg.addColorStop(0, "#ffffff");
+  fg.addColorStop(0.45, "#efe6e2");
+  fg.addColorStop(0.78, "#cbb9b6");
+  fg.addColorStop(1, "#8d7a7b");
+  fctx.fillStyle = fg;
+  fctx.fillRect(0, 0, 128, 128);
+  fctx.strokeStyle = "rgba(255,255,255,0.5)";
+  for (let r = 12; r < 60; r += 9) {
+    fctx.beginPath();
+    fctx.arc(64, 64, r, 0, Math.PI * 2);
+    fctx.lineWidth = 1;
+    fctx.stroke();
+  }
+  const flashTexture = new THREE.CanvasTexture(flashCanvas);
+  flashTexture.colorSpace = THREE.SRGBColorSpace;
+
+  const flash = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.132, 0.132, 0.03, 28),
+    new THREE.MeshStandardMaterial({
+      map: flashTexture,
+      color: 0xffffff,
+      emissive: 0xffe9e0,
+      emissiveIntensity: 0.35,
+      roughness: 0.35,
+      metalness: 0.1,
+    }),
+  );
+  flash.rotation.x = Math.PI / 2;
+  flash.position.set(plateX + 0.677, plateY + 0.339, 0.085);
+  backGroup.add(flash);
+
+  const lidar = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.03, 22), lensGlass);
+  lidar.rotation.x = Math.PI / 2;
+  lidar.position.set(plateX + 0.677, plateY - 0.347, 0.085);
+  backGroup.add(lidar);
+
+  /* блик стекла: рисуем уже со скруглёнными углами, иначе появятся уголки */
+  const sheenCanvas = document.createElement("canvas");
+  sheenCanvas.width = 512;
+  sheenCanvas.height = 1097;
+  const sctx = sheenCanvas.getContext("2d");
+  const sheen = sctx.createLinearGradient(0, 0, 512, 700);
+  sheen.addColorStop(0, "rgba(255,255,255,0.10)");
+  sheen.addColorStop(0.42, "rgba(255,255,255,0.02)");
+  sheen.addColorStop(1, "rgba(255,255,255,0)");
+  sctx.fillStyle = sheen;
+  sctx.fillRect(0, 0, 512, 1097);
+  sctx.globalCompositeOperation = "destination-in";
+  roundRect(sctx, 0, 0, 512, 1097, 74);
+  sctx.fillStyle = "#fff";
+  sctx.fill();
+
+  const glass = new THREE.Mesh(
+    new THREE.PlaneGeometry(screenW, screenH),
+    new THREE.MeshBasicMaterial({
+      map: new THREE.CanvasTexture(sheenCanvas),
+      transparent: true,
+      opacity: 0.55,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    }),
+  );
+  glass.position.z = screen.position.z + 0.002;
+  group.add(glass);
+
+  /* подсветка за телефоном */
+  const glow = new THREE.Mesh(
+    new THREE.PlaneGeometry(5.6, 5.6),
+    new THREE.MeshBasicMaterial({
+      map: new THREE.CanvasTexture(makeGlowTexture()),
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      opacity: 0.55,
+    }),
+  );
+  glow.position.z = -0.8;
+  group.add(glow);
+
+  /* сигналы вызова: расходящиеся кольца.
+     Живут в отдельной группе, не в телефоне: при перевороте корпуса они
+     должны оставаться за ним, иначе кольца окажутся поверх экрана. */
+  const signalGroup = new THREE.Group();
+  signalGroup.position.z = -0.55;
+  scene.add(signalGroup);
+  const ringTexture = new THREE.CanvasTexture(makeRingTexture());
+  const rings = Array.from({ length: 7 }, () => {
+    const mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1),
+      new THREE.MeshBasicMaterial({
+        map: ringTexture,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        opacity: 0,
+        side: THREE.DoubleSide,
+      }),
+    );
+    mesh.visible = false;
+    signalGroup.add(mesh);
+    return { mesh, start: -1 };
+  });
+  const RING_TIMES = [1.7, 2.15, 2.6, 3.05, 3.5, 3.95, 4.35];
+
+  /* свет и окружение */
+  /* Свет тёплый, а не голубой: холодный поднимал G/B и бургунди выглядел
+     серо-розовым (сверено с фото: панель 72/41/48 против 75/50/55). */
+  scene.add(new THREE.AmbientLight(0xffdde3, 0.28));
+  const key = new THREE.DirectionalLight(0xffe2e2, 0.95);
+  key.position.set(2.2, 3.2, 3.6);
+  scene.add(key);
+  const rim = new THREE.PointLight(0xffb1a6, 20, 14);
+  rim.position.set(-3.1, -1.4, 2.2);
+  scene.add(rim);
+  const warn = new THREE.PointLight(0xff6157, 14, 12);
+  warn.position.set(3, 2.4, -1.6);
+  scene.add(warn);
+  const backLight = new THREE.DirectionalLight(0xffcccc, 0.9);
+  backLight.position.set(-2.4, 2.0, -3.4);
+  scene.add(backLight);
+
+  // Окружение — настоящая HDR-студия Poly Haven studio_small_09 (CC0),
+  // сжатая до equirect 512×256 (tools/polyhaven.py hdri studio_small_09):
+  // металл получает реальные блики софтбоксов, а не нарисованный градиент.
+  const envTexture = new THREE.TextureLoader().load(envStudio);
+  envTexture.mapping = THREE.EquirectangularReflectionMapping;
+  envTexture.colorSpace = THREE.SRGBColorSpace;
+  scene.environment = envTexture;
+
+  /* ── состояние ─────────────────────────────────────────────────── */
+
+  let generation = 0;
+  let gaveCode = false;
+  let voice = null;
+
+  const state = {
+    node: "incoming",
+    view: "locked",
+    unlock: 0,
+    mode: "incoming",
+    gender: Math.random() < 0.5 ? "m" : "f",
+    code: String(1000 + Math.floor(Math.random() * 9000)),
+    sms: null,
+    smsShown: false,
+    smsHistory: [],
+    notifications: makeNotifications(),
+    name: "Неизвестный",
+    number: randomNumber(),
+    timer: "00:00",
+    seconds: 0,
+    phase: 0,
+    clock: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
+    hover: null,
+    islandW: ISLAND.w,
+    islandH: ISLAND.h,
+  };
+
+  const paint = () => {
+    drawScreen(ctx, state);
+    texture.needsUpdate = true;
+  };
+
+  const paintLayer = () => {
+    drawLockLayer(lctx, state);
+    layerTexture.needsUpdate = true;
+  };
+
+  let ticker = null;
+  const startTicker = () => {
+    if (ticker) return;
+    ticker = setInterval(() => {
+      state.seconds += 1;
+      const mm = String(Math.floor(state.seconds / 60)).padStart(2, "0");
+      const ss = String(state.seconds % 60).padStart(2, "0");
+      state.timer = `${mm}:${ss}`;
+      if (status && state.mode === "active") status.textContent = `разговор · ${state.timer} · запись`;
+      paint();
+    }, 1000);
+  };
+  const stopTicker = () => {
+    clearInterval(ticker);
+    ticker = null;
+  };
+
+  /* ── телефонный звук ───────────────────────────────────────────────
+     Голос проходит ту же обработку, что и в настоящей трубке: срез ниже
+     300 Гц и выше 3400 Гц, подъём разборчивости около 1,9 кГц, мягкое
+     насыщение и компрессия. Плюс регулятор громкости и сигнал отбоя. */
+
+  const volumeBox = document.getElementById("phone-volume");
+  const volumeRange = document.getElementById("phone-volume-range");
+  const volumeValue = document.getElementById("phone-volume-value");
+
+  let audioCtx = null;
+  let voiceGain = null;
+  let voiceInput = null;
+
+  const softClip = () => {
+    const size = 2048;
+    const curve = new Float32Array(size);
+    const norm = Math.tanh(1.7);
+    for (let i = 0; i < size; i += 1) {
+      const x = (i * 2) / size - 1;
+      curve[i] = Math.tanh(x * 1.7) / norm;
+    }
+    return curve;
+  };
+
+  /* По умолчанию 30%: голос не глушит и не пугает — так просил автор. */
+  const volumeFraction = () => (volumeRange ? Number(volumeRange.value) / 100 : 0.3);
+
+  const ensureAudio = () => {
+    if (audioCtx) return audioCtx;
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    audioCtx = new Ctx();
+
+    const highpass = audioCtx.createBiquadFilter();
+    highpass.type = "highpass";
+    highpass.frequency.value = 310;
+    highpass.Q.value = 0.7;
+
+    const presence = audioCtx.createBiquadFilter();
+    presence.type = "peaking";
+    presence.frequency.value = 1900;
+    presence.gain.value = 4;
+    presence.Q.value = 0.9;
+
+    const lowpass = audioCtx.createBiquadFilter();
+    lowpass.type = "lowpass";
+    lowpass.frequency.value = 3400;
+    lowpass.Q.value = 0.7;
+
+    const shaper = audioCtx.createWaveShaper();
+    shaper.curve = softClip();
+    shaper.oversample = "2x";
+
+    const compressor = audioCtx.createDynamicsCompressor();
+    compressor.threshold.value = -26;
+    compressor.knee.value = 20;
+    compressor.ratio.value = 5;
+    compressor.attack.value = 0.004;
+    compressor.release.value = 0.22;
+
+    voiceGain = audioCtx.createGain();
+    voiceGain.gain.value = volumeFraction() * 0.95;
+
+    highpass.connect(presence).connect(lowpass).connect(shaper).connect(compressor).connect(voiceGain);
+    voiceGain.connect(audioCtx.destination);
+    voiceInput = highpass;
+    return audioCtx;
+  };
+
+  /** Сигнал отбоя: 425 Гц, три коротких гудка — как в обычной телефонии. */
+  const playHangup = () => {
+    const ctx = ensureAudio();
+    if (!ctx) return;
+    ctx.resume?.();
+    const start = ctx.currentTime + 0.05;
+    const osc = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.value = 425;
+    const gate = ctx.createGain();
+    gate.gain.value = 0;
+    osc.connect(gate).connect(ctx.destination);
+    for (let i = 0; i < 3; i += 1) {
+      const at = start + i * 0.62;
+      gate.gain.setValueAtTime(0, at);
+      gate.gain.linearRampToValueAtTime(0.13, at + 0.015);
+      gate.gain.setValueAtTime(0.13, at + 0.28);
+      gate.gain.linearRampToValueAtTime(0, at + 0.32);
+    }
+    osc.start(start);
+    osc.stop(start + 2.1);
+  };
+
+  const applyVolume = () => {
+    const value = volumeFraction();
+    if (voiceGain) voiceGain.gain.value = value * 0.95;
+    if (voice) voice.volume = Math.min(1, value + 0.15);
+    if (volumeValue) volumeValue.textContent = `${Math.round(value * 100)}%`;
+    // заливка дорожки подстраивается под значение — как в системных контролах
+    if (volumeRange) volumeRange.style.setProperty("--fill", `${Math.round(value * 100)}%`);
+  };
+
+  volumeRange?.addEventListener("input", applyVolume);
+  applyVolume();
+
+  const stopVoice = () => {
+    if (!voice) return;
+    voice.onended = null;
+    voice.onerror = null;
+    voice.pause();
+    voice = null;
+    document.querySelector(".call__rec")?.classList.remove("is-speaking");
+  };
+
+  /** Голос мошенника: ждём окончания реплики, но не бесконечно. */
+  const playVoice = (url, onEnd) => {
+    stopVoice();
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      onEnd();
+    };
+    try {
+      voice = new Audio(url);
+      voice.preload = "auto";
+      voice.crossOrigin = "anonymous";
+      // через фильтры проходит только этот элемент; если WebAudio недоступен,
+      // остаётся обычное воспроизведение
+      const ctx = ensureAudio();
+      if (ctx && voiceInput) {
+        ctx.resume?.();
+        try {
+          ctx.createMediaElementSource(voice).connect(voiceInput);
+        } catch {
+          /* элемент уже был подключён — играем как есть */
+        }
+      }
+      applyVolume();
+      voice.onended = () => {
+        document.querySelector(".call__rec")?.classList.remove("is-speaking");
+        finish();
+      };
+      voice.onerror = () => {
+        document.querySelector(".call__rec")?.classList.remove("is-speaking");
+        setTimeout(finish, 2400);
+      };
+      document.querySelector(".call__rec")?.classList.add("is-speaking");
+      voice.play().catch(() => setTimeout(finish, 2400));
+      setTimeout(finish, 30000); // страховка: диалог не должен застрять
+    } catch {
+      finish();
+    }
+  };
+
+  const setHint = (text) => {
+    if (!hint) return;
+    hint.textContent = text;
+    hint.hidden = !text;
+  };
+
+  /** Три ноты «СМС» — как системный звук iPhone, синтезом. */
+  const playSmsTone = () => {
+    const ac = ensureAudio();
+    if (!ac) return;
+    const now = ac.currentTime;
+    [1046.5, 1318.5, 1568].forEach((freq, i) => {
+      const osc = ac.createOscillator();
+      const gain = ac.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      const t0 = now + i * 0.11;
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.exponentialRampToValueAtTime(0.2, t0 + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.26);
+      osc.connect(gain).connect(ac.destination);
+      osc.start(t0);
+      osc.stop(t0 + 0.3);
+    });
+  };
+
+  /** СМС приходит с того самого номера, который называл «оператор». */
+  const showSms = () => {
+    if (state.smsShown) return;
+    state.smsShown = true;
+    state.sms = {
+      from: state.number,
+      text: `Код ${state.code} — подтверждение продления номера. Никому не сообщайте.`,
+      at: performance.now(),
+    };
+    playSmsTone();
+    paint();
+  };
+
+  const appendLine = (entry) => {
+    const el = document.createElement("p");
+    el.className =
+      entry.who === "scam" ? "line line--scam" : entry.who === "you" ? "line line--victim" : "line line--note";
+    if (entry.who === "note") {
+      el.textContent = entry.text;
+    } else {
+      const text = entry.text.replace("{code}", state.code);
+      el.innerHTML = `<span class="line__who">${entry.who === "scam" ? "мошенник" : "Вы"}</span><span>${escapeHtml(
+        text,
+      )}</span>`;
+    }
+    log.append(el);
+    log.scrollTop = log.scrollHeight;
+  };
+
+  const renderChoices = (node) => {
+    choices.innerHTML = "";
+    if (node.end) {
+      if (reset) reset.hidden = false;
+      setHint("нажмите «Начать заново», чтобы пройти другой веткой");
+      return;
+    }
+    node.choices.forEach((choice, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "choice";
+      button.innerHTML = `<span class="choice__key">${index + 1}</span><span>${escapeHtml(choice.label)}</span>`;
+      button.addEventListener("click", () => go(choice.next));
+      choices.append(button);
+    });
+    setHint("дальше выбирайте ответы справа");
+  };
+
+  const renderLockKeys = () => {
+    choices.innerHTML = `
+      <div class="call__keys">
+        <button type="button" class="choice" data-phone-action="unlock">Разблокировать</button>
+      </div>`;
+    choices.querySelectorAll("[data-phone-action]").forEach((button) => {
+      button.addEventListener("click", () => runAction(button.dataset.phoneAction));
+    });
+    setHint("");
+  };
+
+  const renderIncomingKeys = () => {
+    choices.innerHTML = `
+      <div class="call__keys">
+        <button type="button" class="choice" data-phone-action="answer">Ответить</button>
+        <button type="button" class="choice" data-phone-action="decline">Отклонить</button>
+      </div>`;
+    choices.querySelectorAll("[data-phone-action]").forEach((button) => {
+      button.addEventListener("click", () => runAction(button.dataset.phoneAction));
+    });
+    setHint("нажмите «Ответить» или «Отклонить» на экране телефона");
+  };
+
+  const playEntries = (node, done) => {
+    const entries = node.entries ?? [];
+    const myGeneration = generation;
+    if (!entries.length) {
+      done();
+      return;
+    }
+    let index = 0;
+    const step = () => {
+      if (myGeneration !== generation) return;
+      if (index >= entries.length) {
+        done();
+        return;
+      }
+      const entry = entries[index];
+      index += 1;
+      appendLine(entry);
+      const track = state.gender === "f" ? node.audioF || node.audio : node.audio;
+      if (entry.who === "scam" && track) {
+        playVoice(track, () => {
+          if (myGeneration === generation) setTimeout(step, 380);
+        });
+        return;
+      }
+      setTimeout(step, isReduced ? 60 : 700);
+    };
+    step();
+  };
+
+  const go = (id) => {
+    const node = NODES[id];
+    if (!node) return;
+    generation += 1;
+    state.node = id;
+
+    /* каждый вход на блокировку — новый набор сообщений */
+    if (id === "incoming" && state.view === "locked") {
+      state.notifications = makeNotifications();
+      paintLayer();
+    }
+    if (id === "hello") {
+      state.mode = "active";
+      startTicker();
+      if (volumeBox) volumeBox.hidden = false;
+      if (status) status.textContent = "разговор · 00:00 · запись";
+      paint();
+    }
+    if (id === "after_code") gaveCode = true;
+    if (id === "sms" && !state.smsShown) {
+      const myGeneration = generation;
+      setTimeout(() => {
+        if (myGeneration === generation) showSms();
+      }, 2400);
+    }
+    if (node.screen === "ended") {
+      state.mode = "ended";
+      stopTicker();
+      stopVoice();
+      if (volumeBox) volumeBox.hidden = true;
+      playHangup();
+      paint();
+      if (status) status.textContent = `разговор завершён · ${state.timer}`;
+    }
+
+    choices.innerHTML = "";
+    if (reset) reset.hidden = true;
+
+    if (node.end) {
+      playEntries(node, () => renderChoices(node));
+      return;
+    }
+    if (id === "incoming") {
+      renderIncomingKeys();
+      return;
+    }
+    playEntries(node, () => renderChoices(node));
+  };
+
+  const runAction = (action) => {
+    if (action === "unlock") {
+      finishUnlock();
+      return;
+    }
+    if (action === "answer" && state.mode === "incoming" && introDone) {
+      go("hello");
+      return;
+    }
+    if (action === "decline" && state.mode === "incoming" && introDone) {
+      go("end_declined");
+      return;
+    }
+    if (action === "hangup" && state.mode === "active") {
+      go(gaveCode ? "end_after_code" : "end_declined");
+    }
+  };
+
+  const restart = () => {
+    generation += 1;
+    gaveCode = false;
+    stopTicker();
+    stopVoice();
+    log.innerHTML = "";
+    choices.innerHTML = "";
+    if (reset) reset.hidden = true;
+    if (volumeBox) volumeBox.hidden = true;
+    Object.assign(state, {
+      node: "incoming",
+      view: "locked",
+      unlock: 0,
+      mode: "incoming",
+      gender: Math.random() < 0.5 ? "m" : "f",
+      code: String(1000 + Math.floor(Math.random() * 9000)),
+      sms: null,
+      smsShown: false,
+      smsHistory: [],
+      notifications: makeNotifications(),
+      number: randomNumber(),
+      timer: "00:00",
+      seconds: 0,
+      phase: 0,
+      clock: new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }),
+      hover: null,
+      islandW: ISLAND.w,
+      islandH: ISLAND.h,
+    });
+    paint();
+    paintLayer();
+    if (status) status.textContent = "";
+    renderLockKeys();
+  };
+
+  reset?.addEventListener("click", restart);
+
+  /* ── попадания по экрану ───────────────────────────────────────── */
+
+  const raycaster = new THREE.Raycaster();
+  const ndc = new THREE.Vector2();
+  const hitPoint = new THREE.Vector3();
+
+  const pointerToDesign = (event) => {
+    const box = canvas.getBoundingClientRect();
+    ndc.x = ((event.clientX - box.left) / box.width) * 2 - 1;
+    ndc.y = -((event.clientY - box.top) / box.height) * 2 + 1;
+    raycaster.setFromCamera(ndc, camera);
+    const hit = raycaster.intersectObject(screen, false)[0];
+    if (!hit) return null;
+    hitPoint.copy(hit.point);
+    screen.worldToLocal(hitPoint);
+    const u = hitPoint.x / screenW + 0.5;
+    const v = 0.5 - hitPoint.y / screenH;
+    if (u < 0 || u > 1 || v < 0 || v > 1) return null;
+    return { x: u * DESIGN.w, y: v * DESIGN.h };
+  };
+
+  const activeButtons = () => {
+    if (!introDone || state.view === "locked") return [];
+    if (state.mode === "incoming") return ["decline", "answer"];
+    if (state.mode === "active") return ["hangup"];
+    return [];
+  };
+
+  const hitTest = (point) => {
+    if (!point) return null;
+    return (
+      activeButtons().find((id) => {
+        const b = BUTTONS[id];
+        return Math.hypot(point.x - b.x, point.y - b.y) <= b.r + HIT_PADDING;
+      }) ?? null
+    );
+  };
+
+  let hovering = false;
+  const setHover = (id) => {
+    if (state.hover === id) return;
+    state.hover = id;
+    canvas.style.cursor = id ? "pointer" : "grab";
+    paint();
+  };
+
+  /* Телефон можно взять и крутить: тянем мышью или пальцем в любую сторону,
+     угол ограничен ±77° по горизонтали и ±48° по вертикали. */
+  const swipe = { active: false, pointerId: null, startY: 0 };
+  let unlocking = false;
+  let unlockStartedAt = 0;
+  let unlockFrom = 0;
+  /* Разблокировка — как в iOS: экран должен уехать хотя бы до половины.
+     До этого отпускание возвращает его назад. */
+  const UNLOCK_THRESHOLD = 0.5;
+
+  const finishUnlock = () => {
+    if (!introDone || state.view !== "locked" || unlocking) return;
+    unlocking = true;
+    unlockStartedAt = performance.now();
+    unlockFrom = state.unlock ?? 0;
+  };
+
+  const endSwipe = () => {
+    if (!swipe.active) return false;
+    swipe.active = false;
+    if (swipe.pointerId !== null) {
+      try {
+        canvas.releasePointerCapture(swipe.pointerId);
+      } catch {
+        /* уже отпущен */
+      }
+    }
+    swipe.pointerId = null;
+    if ((state.unlock ?? 0) >= UNLOCK_THRESHOLD) finishUnlock();
+    return true;
+  };
+
+  const grab = { active: false, pointerId: null, startX: 0, startY: 0, baseY: 0, baseX: 0, lastT: 0 };
+  const manual = { y: 0, x: 0 };
+  /* инерция: отпустил телефон на ходу — он ещё немного докручивается сам */
+  const spin = { y: 0, x: 0 };
+  let lastGrabAt = 0;
+
+  const releaseGrab = (event) => {
+    if (!grab.active) return;
+    grab.active = false;
+    lastGrabAt = performance.now();
+    spin.y = clamp(spin.y, -9, 9);
+    spin.x = clamp(spin.x, -9, 9);
+    if (grab.pointerId !== null) {
+      try {
+        canvas.releasePointerCapture(grab.pointerId);
+      } catch {
+        /* уже отпущен */
+      }
+    }
+    grab.pointerId = null;
+    canvas.style.cursor = "grab";
+    if (event) setHover(hitTest(pointerToDesign(event)));
+  };
+
+  canvas.style.touchAction = "manipulation";
+
+  canvas.style.cursor = "grab";
+
+  canvas.addEventListener("pointerdown", (event) => {
+    // на заблокированном экране жест — свайп вверх, а не вращение модели
+    if (introDone && state.view === "locked" && pointerToDesign(event)) {
+      event.preventDefault();
+      swipe.active = true;
+      swipe.pointerId = event.pointerId;
+      swipe.startY = event.clientY;
+      unlocking = false; // новый жест отменяет прежний досчёт
+      try {
+        canvas.setPointerCapture(event.pointerId);
+      } catch {
+        /* не критично */
+      }
+      return;
+    }
+
+    const action = hitTest(pointerToDesign(event));
+    if (action) {
+      event.preventDefault();
+      runAction(action);
+      return;
+    }
+    grab.active = true;
+    grab.pointerId = event.pointerId;
+    grab.startX = event.clientX;
+    grab.startY = event.clientY;
+    grab.baseY = manual.y;
+    grab.baseX = manual.x;
+    grab.lastT = performance.now();
+    spin.y = 0;
+    spin.x = 0;
+    try {
+      canvas.setPointerCapture(event.pointerId);
+    } catch {
+      /* не критично */
+    }
+    canvas.style.cursor = "grabbing";
+  });
+
+  canvas.addEventListener("pointermove", (event) => {
+    if (swipe.active && event.pointerId === swipe.pointerId) {
+      /* 1:1 по высоте экрана: палец прошёл половину — экран уехал наполовину.
+         Никакого paint() здесь — слой уже отдельный меш, перерисовка давала «20 fps». */
+      const dy = (event.clientY - swipe.startY) / Math.max(1, canvas.clientHeight);
+      state.unlock = clamp(-dy, 0, 1);
+      return;
+    }
+    if (grab.active && event.pointerId === grab.pointerId) {
+      const dx = (event.clientX - grab.startX) / Math.max(1, canvas.clientWidth);
+      const dy = (event.clientY - grab.startY) / Math.max(1, canvas.clientHeight);
+      /* Вращение свободное: и по горизонтали, и по вертикали, без упоров —
+         телефон можно положить на бок и перевернуть. */
+      const prevY = manual.y;
+      const prevX = manual.x;
+      manual.y = grab.baseY + dx * 2.7;
+      manual.x = grab.baseX - dy * 1.7;
+      const now = performance.now();
+      const dt = Math.max(8, now - grab.lastT);
+      grab.lastT = now;
+      spin.y = ((manual.y - prevY) / dt) * 16;
+      spin.x = ((manual.x - prevX) / dt) * 16;
+      canvas.style.cursor = "grabbing";
+      return;
+    }
+    setHover(hitTest(pointerToDesign(event)));
+  });
+
+  const onPointerUp = (event) => {
+    if (endSwipe()) return;
+    releaseGrab(event);
+  };
+  canvas.addEventListener("pointerup", onPointerUp);
+  canvas.addEventListener("pointercancel", (event) => {
+    if (endSwipe()) return;
+    releaseGrab(event);
+  });
+  canvas.addEventListener("pointerleave", () => {
+    hovering = false;
+    releaseGrab(null);
+    setHover(null);
+  });
+  /* Указатель может уйти за пределы холста и отпуститься там: без этих
+     обработчиков шторка «залипала» и оставалась висеть в воздухе. */
+  canvas.addEventListener("lostpointercapture", () => {
+    endSwipe();
+  });
+  window.addEventListener("pointerup", (event) => {
+    if (swipe.active && event.pointerId === swipe.pointerId) endSwipe();
+  });
+  window.addEventListener("pointercancel", () => {
+    endSwipe();
+  });
+  window.addEventListener("blur", () => {
+    endSwipe();
+  });
+  canvas.addEventListener("pointerenter", () => {
+    hovering = true;
+  });
+
+  // двойной клик — вернуть телефон в исходное положение
+  canvas.addEventListener("dblclick", () => {
+    manual.y = 0;
+    manual.x = 0;
+  });
+
+  /* ── заставка: спина → дрожь и сигналы → переворот ─────────────── */
+
+  const TIMELINE = { backEnd: 1.6, flipStart: 3.5, flipEnd: 4.7, ready: 5.1 };
+  let introStart = -1;
+  let introDone = isReduced;
+  const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
+  const easeOut = (t) => 1 - (1 - t) ** 3;
+  const clamp01 = (v) => Math.min(1, Math.max(0, v));
+  const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
+
+  const startIntro = () => {
+    if (introStart >= 0 || introDone) return;
+    introStart = performance.now();
+    RING_TIMES.forEach((time, index) => {
+      rings[index].start = time;
+    });
+  };
+
+  /* ── рендер ────────────────────────────────────────────────────── */
+
+  const resize = () => {
+    const box = canvas.getBoundingClientRect();
+    if (box.width < 8 || box.height < 8) return;
+    renderer.setSize(box.width, box.height, false);
+    camera.aspect = box.width / box.height;
+    camera.updateProjectionMatrix();
+
+    /* Резкость текста: текстура должна быть чуть крупнее экранных пикселей.
+       Раньше масштаб был фиксированный (2, потом 3) — на одном размере текст
+       растягивался, на другом сжимался, и в обоих случаях выглядел мыльным. */
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const wanted = clamp(Math.ceil((box.width * dpr * 1.15) / DESIGN.w), 1, 4);
+    if (wanted !== TEXTURE_SCALE) {
+      TEXTURE_SCALE = wanted;
+      screenCanvas.width = DESIGN.w * TEXTURE_SCALE;
+      screenCanvas.height = DESIGN.h * TEXTURE_SCALE;
+      layerCanvas.width = DESIGN.w * TEXTURE_SCALE;
+      layerCanvas.height = DESIGN.h * TEXTURE_SCALE;
+      texture.needsUpdate = true;
+      layerTexture.needsUpdate = true;
+      paint();
+      paintLayer();
+      return;
+    }
+    paint();
+  };
+
+  let visible = true;
+  let frame = 0;
+  let lastRepaint = 0;
+  let lastAnimPaint = 0;
+  const startedAt = performance.now();
+  const target = { x: 0, y: 0 };
+  const pointer = { x: 0, y: 0 };
+
+  stage.addEventListener(
+    "pointermove",
+    (event) => {
+      const box = canvas.getBoundingClientRect();
+      target.x = (event.clientX - box.left) / box.width - 0.5;
+      target.y = (event.clientY - box.top) / box.height - 0.5;
+    },
+    { passive: true },
+  );
+
+  const updateRings = (t) => {
+    rings.forEach((ring) => {
+      if (ring.start < 0) return;
+      const progress = clamp01((t - ring.start) / 1.3);
+      if (progress <= 0) {
+        ring.mesh.visible = false;
+        return;
+      }
+      if (progress >= 1) {
+        ring.mesh.visible = false;
+        return;
+      }
+      ring.mesh.visible = true;
+      const scale = 1.1 + progress * 3.4;
+      ring.mesh.scale.set(scale, scale, 1);
+      ring.mesh.material.opacity = 0.8 * (1 - progress) ** 0.85;
+    });
+  };
+
+  /**
+   * Ошибка внутри кадра не должна замораживать страницу: гасим цикл и
+   * запоминаем сообщение (в консоль и в localStorage — чтобы было видно, что стряслось).
+   */
+  const fail = (error) => {
+    if (frame) cancelAnimationFrame(frame);
+    frame = 0;
+    try {
+      localStorage.setItem("ne-kluy:phone-error", String(error?.stack || error));
+    } catch {
+      /* приватный режим */
+    }
+    console.error("[phone]", error);
+  };
+
+  const loop = () => {
+    // вне экрана не рисуем вовсе: телефон может висеть ниже вьюпорта
+    if (!visible) {
+      frame = 0;
+      return;
+    }
+    frame = requestAnimationFrame(loop);
+    try {
+      tick();
+    } catch (error) {
+      fail(error);
+    }
+  };
+
+  const tick = () => {
+    const now = performance.now();
+    const t = (now - startedAt) / 1000;
+
+    let animPaint = false;
+
+    if (state.view === "locked") {
+      lockLayer.visible = true;
+      if (unlocking) {
+        // свайп принят: слой уезжает вверх и тает, обои остаются на месте
+        const k = Math.min(1, (now - unlockStartedAt) / 300);
+        state.unlock = Math.min(1, unlockFrom + (1 - unlockFrom) * (k * k * (3 - 2 * k)));
+        if (state.unlock >= 1) {
+          unlocking = false;
+          state.unlock = 0;
+          state.view = "call";
+          lockLayer.visible = false;
+          lockLayer.position.y = 0;
+          layerMat.opacity = 1;
+          go("incoming");
+          paint();
+        }
+      } else if (!swipe.active && (state.unlock ?? 0) > 0) {
+        /* Пока жест активен, слой держится за пальцем: раньше tick гасил
+           unlock прямо во время перетаскивания — отсюда «дёргание»,
+           самопроизвольное опускание и застревание шторки. */
+        state.unlock *= 0.86;
+        if (state.unlock < 0.01) state.unlock = 0;
+      }
+      lockLayer.position.y = (state.unlock ?? 0) * 3.95;
+      layerMat.opacity = 1 - (state.unlock ?? 0) * 0.9;
+    } else {
+      lockLayer.visible = false;
+    }
+
+    if (state.sms) {
+      const age = now - state.sms.at;
+      if (age < 1400 || (age > 6900 && age < 7500)) animPaint = true;
+      if (age > 7500) {
+        const card = {
+          app: "sms",
+          color: "#30d158",
+          title: `СМС · ${state.sms.from}`,
+          text: state.sms.text,
+          time: state.clock,
+        };
+        state.smsHistory = [card, ...state.smsHistory].slice(0, 2);
+        state.sms = null;
+        paint();
+      }
+    }
+
+    if (introStart > 0 && !introDone) {
+      const elapsed = (now - introStart) / 1000;
+
+      if (elapsed < TIMELINE.backEnd) {
+        // спина: медленный разворот, чтобы было видно яблоко и блок камер
+        const k = elapsed / TIMELINE.backEnd;
+        group.rotation.y = Math.PI + 0.5 - k * 0.3;
+        group.rotation.x = -0.06 + Math.sin(k * Math.PI) * 0.05;
+        group.rotation.z = 0;
+      } else if (elapsed < TIMELINE.flipStart) {
+        // дрожь: телефон «звонит», из него идут сигналы
+        const shake = clamp01((elapsed - TIMELINE.backEnd) / 0.6);
+        const amp = 0.008 + shake * 0.014;
+        group.rotation.y = Math.PI + 0.2 + Math.sin(elapsed * 6) * 0.05;
+        group.rotation.z = Math.sin(elapsed * 46) * amp * 0.5;
+        group.position.x = Math.sin(elapsed * 52) * amp;
+        group.position.y = Math.sin(elapsed * 39) * amp * 0.6;
+      } else if (elapsed < TIMELINE.flipEnd) {
+        // переворот экраном к человеку
+        const k = easeInOut(clamp01((elapsed - TIMELINE.flipStart) / (TIMELINE.flipEnd - TIMELINE.flipStart)));
+        group.rotation.y = Math.PI * (1 - k);
+        group.rotation.z = Math.sin(k * Math.PI) * -0.05;
+        group.rotation.x = -0.06 * (1 - k);
+        group.position.x = 0;
+        group.position.y = Math.sin(k * Math.PI) * 0.04;
+        screenMat.opacity = clamp01((k - 0.4) / 0.6);
+      } else {
+        // экран перед нами: гасим остатки анимации
+        const k = clamp01((elapsed - TIMELINE.flipEnd) / (TIMELINE.ready - TIMELINE.flipEnd));
+        group.rotation.y = 0;
+        group.rotation.z = 0;
+        group.rotation.x = -0.04 * (1 - k);
+        group.position.x = 0;
+        group.position.y = 0;
+        screenMat.opacity = 1;
+        if (elapsed >= TIMELINE.ready && !introDone) {
+          introDone = true;
+          group.rotation.set(0, 0, 0);
+          if (status) status.textContent = "экран блокировки";
+        }
+      }
+
+      updateRings(elapsed);
+    } else if (!introDone) {
+      // заставка ещё не запускалась: спина, лёгкое покачивание
+      group.rotation.y = Math.PI + Math.sin(t * 0.4) * 0.06;
+      group.rotation.x = -0.05;
+      screenMat.opacity = 0;
+      updateRings(t);
+    } else {
+      const damp = hovering || grab.active ? 0.15 : 1;
+      pointer.x += (target.x * damp - pointer.x) * 0.07;
+      pointer.y += (target.y * damp - pointer.y) * 0.07;
+      const free = grab.active ? 0 : damp;
+      // пока на телефон не навели курсор — он мелко дрожит: живой аппарат ждёт звонка
+      const tremble = Math.sin(t * 26.5) * 0.005 * free + Math.sin(t * 41) * 0.0016 * free;
+      /* Докрутка после отпускания. Телефон остаётся в том положении,
+         в котором его оставили: он твой, а не «возвращается сам». */
+      if (!grab.active && (Math.abs(spin.y) > 0.0005 || Math.abs(spin.x) > 0.0005)) {
+        manual.y += spin.y * 0.016;
+        manual.x += spin.x * 0.016;
+        spin.y *= 0.93;
+        spin.x *= 0.93;
+        if (Math.abs(spin.y) < 0.0005) spin.y = 0;
+        if (Math.abs(spin.x) < 0.0005) spin.x = 0;
+      }
+      group.rotation.y = manual.y + pointer.x * 0.3;
+      group.rotation.x = manual.x - pointer.y * 0.16;
+      group.rotation.z = tremble * 0.5;
+      group.position.y = Math.sin(t * 0.55) * 0.03 + Math.sin(t * 33) * 0.0016 * free;
+    }
+
+    glow.material.opacity = state.mode === "active" ? 0.3 + Math.sin(t * 2.2) * 0.06 : 0.46;
+
+    const targetW = state.mode === "active" ? ISLAND.w + 26 : ISLAND.w;
+    const targetH = state.mode === "active" ? ISLAND.h + 2 : ISLAND.h;
+    const dw = targetW - state.islandW;
+    const dh = targetH - state.islandH;
+    if (Math.abs(dw) > 0.4 || Math.abs(dh) > 0.2) {
+      state.islandW += dw * 0.12;
+      state.islandH += dh * 0.12;
+      paintIsland(state.islandW, state.islandH);
+      layoutIsland(state.islandW, state.islandH);
+      paint();
+    }
+
+    // зелёная точка звонка пульсирует поверх всех слоёв
+    islandDot.visible = state.mode === "active";
+    if (islandDot.visible) {
+      islandDot.material.opacity = 0.45 + 0.35 * Math.abs(Math.sin(t * 1.6));
+    }
+
+    if (animPaint && now - lastAnimPaint > 40) {
+      lastAnimPaint = now;
+      paint();
+    }
+
+    if (state.mode === "active" && now - lastRepaint > 480) {
+      state.phase = t * 1.5;
+      lastRepaint = now;
+      paint();
+    }
+
+    group.updateMatrixWorld(true);
+    updateClip();
+    renderer.render(scene, camera);
+  };
+
+  if ("IntersectionObserver" in window) {
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        visible = entry.isIntersecting;
+        if (visible && !frame) loop();
+        if (entry.intersectionRatio > 0.35) startIntro();
+      },
+      { threshold: [0, 0.35, 0.6] },
+    );
+    observer.observe(stage);
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      cancelAnimationFrame(frame);
+      frame = 0;
+    } else if (visible && !frame) {
+      loop();
+    }
+  });
+
+  if ("ResizeObserver" in window) new ResizeObserver(resize).observe(canvas);
+  window.addEventListener("resize", resize, { passive: true });
+
+  resize();
+  paint();
+  if (document.fonts?.ready) document.fonts.ready.then(paint);
+  loop();
+
+  if (isReduced) {
+    introDone = true;
+    screenMat.opacity = 1;
+    group.rotation.set(0, 0, 0);
+  }
+
+  if (location.search.includes("dbg")) {
+    window.__phone = {
+      seek: (s) => { introStart = performance.now() - s * 1000; introDone = false; RING_TIMES.forEach((t, i) => { rings[i].start = t; }); tick(); group.updateMatrixWorld(true); updateClip(); renderer.render(scene, camera); },
+      tick,
+      go,
+      forceUnlock: () => { state.view = "call"; go("incoming"); paint(); },
+      state,
+    };
+  }
+  paint();
+  paintLayer();
+  renderLockKeys();
+  if (status) status.textContent = "";
+}

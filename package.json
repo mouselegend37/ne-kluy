@@ -1,0 +1,21 @@
+{
+  "name": "ne-kluy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "НЕ КЛЮЙ — интерактивный тренажёр защиты от цифрового финансового мошенничества (краевой конкурс «На волне финансов»)",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --serve",
+    "serve": "node build.mjs --serve",
+    "deploy": "node tools/deploy.mjs"
+  },
+  "devDependencies": {
+    "@fontsource/golos-text": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/sofia-sans-extra-condensed": "^5.3.0",
+    "esbuild": "^0.28.2",
+    "surge": "^0.57.1",
+    "three": "^0.187.0"
+  }
+}

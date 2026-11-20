@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>НЕ КЛЮЙ — тренажёр защиты от цифрового мошенничества · Краснодарский край</title>
+    <meta
+      name="description"
+      content="Интерактивный проект о цифровом финансовом мошенничестве: разбор подозрительных сообщений, тренажёр из десяти ситуаций, разбор настоящего скрипта телефонного мошенника и проверка того, какие данные получает сайт при входе. Краснодарский край, 2026."
+    />
+    <meta name="theme-color" content="#080d17" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%228%22%20fill%3D%22%23070c15%22%2F%3E%3Cpath%20d%3D%22M9%2022L16%209l7%2013%22%20stroke%3D%22%2337e0bd%22%20stroke-width%3D%223%22%20fill%3D%22none%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%2F%3E%3C%2Fsvg%3E" />
+    <link rel="stylesheet" href="./app.css" />
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body class="gated">
+    <a class="skip" href="#check">Перейти к проверке сообщения</a>
+
+    <!-- Шлюз входа: показывается до чтения сайта. Демонстрация, данных не собирает. -->
+    <div class="gate" id="gate" role="dialog" aria-modal="true" aria-labelledby="gate-title" hidden>
+      <div class="gate__card" id="gate-card"></div>
+    </div>
+
+    <header class="top">
+      <div class="top__inner">
+        <a class="brand" href="#top">
+          <span class="brand__mark" aria-hidden="true"></span>
+          <span class="brand__text">НЕ КЛЮЙ</span>
+        </a>
+        <nav class="nav" aria-label="Разделы">
+          <a href="#scheme">Как обманывают</a>
+          <a href="#check">Проверить сообщение</a>
+          <a href="#trainer">Тренажёр</a>
+          <a href="#case">Скрипт изнутри</a>
+          <a href="#method">Методика</a>
+        </nav>
+        <button class="senior-toggle" type="button" aria-pressed="false" id="senior-toggle">
+          Крупный текст
+        </button>
+      </div>
+    </header>
+
+    <main id="top">
+      <!-- ───────────────────────── Обложка ───────────────────────── -->
+      <section class="hero" aria-labelledby="hero-title">
+        <canvas class="hero__wave" id="wave-canvas" aria-hidden="true"></canvas>
+        <div class="hero__glow" aria-hidden="true"></div>
+        <!-- тонкая светящаяся дуга: приём из тёмных градиентных наборов -->
+        <svg class="hero__arc" viewBox="0 0 760 420" fill="none" aria-hidden="true">
+          <defs>
+            <linearGradient id="arc-gradient" x1="40" y1="400" x2="720" y2="40" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#7fb2a4" stop-opacity="0" />
+              <stop offset="0.45" stop-color="#c9a0aa" stop-opacity="0.85" />
+              <stop offset="1" stop-color="#e9c6cd" stop-opacity="0" />
+            </linearGradient>
+            <filter id="arc-blur" x="-30%" y="-30%" width="160%" height="160%">
+              <feGaussianBlur stdDeviation="18" />
+            </filter>
+            <filter id="arc-soft" x="-30%" y="-30%" width="160%" height="160%">
+              <feGaussianBlur stdDeviation="4" />
+            </filter>
+          </defs>
+          <path d="M30 372C150 372 250 300 320 208S450 40 560 60s170 120 178 208" stroke="url(#arc-gradient)" stroke-width="26" filter="url(#arc-blur)" opacity="0.5" />
+          <path d="M30 372C150 372 250 300 320 208S450 40 560 60s170 120 178 208" stroke="url(#arc-gradient)" stroke-width="8" filter="url(#arc-soft)" opacity="0.8" />
+          <path d="M30 372C150 372 250 300 320 208S450 40 560 60s170 120 178 208" stroke="url(#arc-gradient)" stroke-width="1.6" opacity="0.95" />
+        </svg>
+        <div class="shell hero__inner">
+          <p class="eyebrow">Краснодарский край · конкурс «На волне финансов» · 2026</p>
+          <h1 id="hero-title" class="hero__title">
+            <span class="hero__title-line">НЕ</span>
+            <span class="hero__title-line hero__title-line--accent">КЛЮЙ</span>
+          </h1>
+          <p class="hero__lead">
+            Мошенник не взламывает банк. Он разговаривает с вами — и вы сами
+            <mark class="hl hl--danger">переводите деньги</mark>. Этот сайт учит узнавать
+            <mark class="hl">крючок</mark> до того, как вы на него
+            <mark class="hl hl--warn">клюнули</mark>.
+          </p>
+          <div class="hero__actions">
+            <a class="btn btn--primary" href="#check">Проверить сообщение</a>
+            <a class="btn btn--ghost" href="#trainer">Пройти тренажёр</a>
+          </div>
+          <ul class="hero__facts" role="list">
+            <li><b>30+</b><span>признаков обмана с пояснением</span></li>
+            <li><b>10</b><span>ситуаций в тренажёре</span></li>
+            <li><b>0</b><span>байт отправляется на сервер</span></li>
+          </ul>
+        </div>
+        <div class="hero__scroll" aria-hidden="true"><span></span></div>
+        <!-- Река денег: слева жертва, справа мошенник, между ними — монеты -->
+        <div class="river" aria-hidden="true">
+          <figure class="river__who river__who--victim">
+            <svg viewBox="0 0 64 64" width="56" height="56" fill="none" aria-hidden="true">
+              <circle cx="32" cy="20" r="10" stroke="currentColor" stroke-width="2.4" />
+              <path d="M13 57c0-10.5 8.5-19 19-19s19 8.5 19 19" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />
+              <rect x="42" y="13" width="6.5" height="12" rx="2.4" transform="rotate(16 45 19)" stroke="currentColor" stroke-width="2.2" />
+            </svg>
+            <figcaption>жертва<small>вы</small></figcaption>
+          </figure>
+
+          <span class="river__flow">
+            <b>500 000 ₽</b><b>100 $</b><b>12 400 ₽</b><b>1 000 €</b><b>75 000 ₽</b>
+          </span>
+
+          <figure class="river__who river__who--fraud">
+            <svg viewBox="0 0 64 64" width="56" height="56" fill="none" aria-hidden="true">
+              <path d="M32 6c9.4 0 15.5 7.2 15.5 15.6 0 5-2.2 7.9-2.9 12.4l3.9 5.6H17.5l3.9-5.6c-.7-4.5-2.9-7.4-2.9-12.4C18.5 13.2 22.6 6 32 6z" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round" />
+              <path d="M24.5 27.5c2 2.6 4.6 4 7.5 4s5.5-1.4 7.5-4" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+              <path d="M13 57c0-10.5 8.5-19 19-19s19 8.5 19 19" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" />
+              <path d="M46 44v6.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+              <circle cx="46" cy="53.5" r="2" fill="currentColor" />
+            </svg>
+            <figcaption>мошенник<small>«оператор связи»</small></figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <!-- ───────────────────────── Схема обмана ───────────────────────── -->
+      <section class="section" id="scheme" aria-labelledby="scheme-title">
+        <div class="shell">
+          <header class="section__head reveal">
+            <p class="eyebrow">Механика</p>
+            <h2 id="scheme-title">Четыре шага, которые повторяются всегда</h2>
+            <p class="section__lead">
+              Схемы меняются каждый месяц, последовательность — нет. Если вы
+              слышите второй шаг, дальше уже не важно, что вам говорят.
+            </p>
+          </header>
+
+          <ol class="steps" role="list">
+            <li class="step reveal">
+              <span class="step__num">01</span>
+              <h3>Крючок</h3>
+              <p>
+                Повод, из-за которого нельзя не ответить: перевод, посылка,
+                блокировка счёта, перерасчёт пенсии, вакансия, возврат денег.
+              </p>
+              <p class="step__hint">Признак: вам <mark class="hl">пишут или звонят первыми</mark>.</p>
+            </li>
+            <li class="step reveal">
+              <span class="step__num">02</span>
+              <h3>Доверие</h3>
+              <p>
+                Подмена отправителя: логотип банка, имя «Госуслуги», номер,
+                похожий на официальный, профиль коллеги в мессенджере.
+              </p>
+              <p class="step__hint">Признак: вас торопят и <mark class="hl hl--warn">просят не рассказывать близким</mark>.</p>
+            </li>
+            <li class="step reveal">
+              <span class="step__num">03</span>
+              <h3>Давление</h3>
+              <p>
+                Срочность и страх: «деньги уходят», «вы под следствием»,
+                «через 10 минут будет поздно». Время на размышление отнимают намеренно.
+              </p>
+              <p class="step__hint">Признак: любое <mark class="hl hl--warn">«сейчас или никогда»</mark>.</p>
+            </li>
+            <li class="step reveal">
+              <span class="step__num">04</span>
+              <h3>Действие</h3>
+              <p>
+                Перевод «на безопасный счёт», код из СМС, установка программы
+                удалённого доступа, передача наличных курьеру, оплата «комиссии».
+              </p>
+              <p class="step__hint">Признак: просят сделать то, <mark class="hl hl--danger">чего банк не просит никогда</mark>.</p>
+            </li>
+          </ol>
+
+          <aside class="callout callout--warn reveal">
+            <h3>Короткое правило вместо запоминания схем</h3>
+            <p>
+              Настоящий банк, настоящие «Госуслуги» и настоящая полиция
+              <mark class="hl hl--danger hl--thick">не звонят</mark>
+              с просьбой перевести деньги, продиктовать код
+              из СМС или установить программу.
+              <mark class="hl hl--warn">Безопасного счёта не существует</mark> —
+              это официальная позиция Банка России.
+            </p>
+          </aside>
+
+          <!-- Симулятор звонка: 3D-телефон + ветвящийся диалог -->
+          <div class="reveal" style="margin-top: clamp(2.2rem, 5vw, 3.4rem)">
+            <h3>Тот же звонок — но с кнопкой «стоп»</h3>
+            <p class="section__lead">
+              Ниже — сценарий, который повторяется почти дословно у разных
+              «операторов связи». Пройдите его до конца: у вас есть выбор на
+              каждом шаге, и только один из путей заканчивается без потерь.
+            </p>
+          </div>
+          <div class="phone reveal" id="phone-root">
+            <div>
+              <div class="phone__stage">
+                <canvas id="phone-canvas" aria-label="Макет телефона с входящим звонком"></canvas>
+              </div>
+              <p class="phone__hint" id="phone-hint" hidden>
+                нажмите «Ответить» или «Отклонить» на экране телефона
+              </p>
+            </div>
+            <div class="call">
+              <div class="call__head">
+                <span class="call__rec"><i></i>запись разговора</span>
+                <span class="call__status" id="phone-status">входящий · 00:00</span>
+              </div>
+              <div class="call__log" id="phone-log" aria-live="polite"></div>
+              <div class="call__volume" id="phone-volume" hidden>
+                <svg class="call__volume-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 9.5h3.2L12 5.4v13.2L7.2 14.5H4z" fill="currentColor" />
+                  <path d="M15.6 8.4a5 5 0 0 1 0 7.2M18.2 5.8a8.6 8.6 0 0 1 0 12.4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+                </svg>
+                <label class="call__volume-label" for="phone-volume-range">громкость голоса</label>
+                <input class="call__volume-range" id="phone-volume-range" type="range" min="0" max="100" step="5" value="30" />
+                <output class="call__volume-value" id="phone-volume-value" for="phone-volume-range">30%</output>
+              </div>
+              <div class="call__choices" id="phone-choices"></div>
+              <button class="btn btn--ghost call__reset" type="button" id="phone-reset" hidden>
+                Начать заново
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ───────────────────────── Бот ───────────────────────── -->
+      <section class="section section--dark" id="check" aria-labelledby="check-title">
+        <div class="shell">
+          <header class="section__head reveal">
+            <p class="eyebrow">Инструмент 1 · Дозор</p>
+            <h2 id="check-title">Вставьте сообщение — я покажу, за что цепляются</h2>
+            <p class="section__lead">
+              Скопируйте СМС, письмо или текст из мессенджера. Разбор идёт
+              целиком в вашем браузере: текст никуда не уходит, поэтому сюда
+              можно вставлять реальные сообщения, убрав фамилию и номер.
+            </p>
+          </header>
+
+          <div class="checker reveal">
+            <form class="checker__form" id="bot-form" novalidate>
+              <label class="checker__label" for="bot-input">Текст сообщения</label>
+              <textarea
+                class="checker__input"
+                id="bot-input"
+                rows="6"
+                placeholder="Например: «Здравствуйте! Служба безопасности банка. По вашей карте зафиксирована подозрительная операция. Срочно переведите средства на безопасный счёт, код никому не сообщайте…»"
+                spellcheck="false"
+              ></textarea>
+              <div class="checker__controls">
+                <button class="btn btn--primary" type="submit">Разобрать</button>
+                <button class="btn btn--ghost" type="button" id="bot-clear">Очистить</button>
+                <span class="checker__counter" id="bot-counter" aria-live="polite">0 символов</span>
+              </div>
+            </form>
+
+            <div class="checker__examples" id="bot-examples" aria-label="Примеры сообщений">
+              <p class="checker__examples-title">Или возьмите пример:</p>
+            </div>
+
+            <div class="verdict" id="bot-result" aria-live="polite" hidden></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ───────────────────────── Тренажёр ───────────────────────── -->
+      <section class="section" id="trainer" aria-labelledby="trainer-title">
+        <div class="shell">
+          <header class="section__head reveal">
+            <p class="eyebrow">Инструмент 2 · Тренажёр</p>
+            <h2 id="trainer-title">Десять ситуаций, в которых теряют деньги</h2>
+            <p class="section__lead">
+              По одному вопросу за раз, без таймера. После ответа — объяснение
+              и признак, который выдал обман. Ошибка здесь бесплатна.
+            </p>
+          </header>
+          <div id="trainer-root" class="trainer reveal"></div>
+        </div>
+      </section>
+
+      <!-- ───────────────────────── Скрипт изнутри ───────────────────────── -->
+      <section class="section section--dark" id="case" aria-labelledby="case-title">
+        <div class="shell">
+          <header class="section__head reveal">
+            <p class="eyebrow">Кейс · скрипт изнутри</p>
+            <h2 id="case-title">Так это выглядит со стороны мошенника</h2>
+            <p class="section__lead">
+              Это не пересказ «по мотивам»: перед вами восстановленный скрипт
+              кол-центра — с заготовками, возражениями и карточкой, которую
+              оператор заполняет на вас. Откройте каждый шаг: под цитатой видно,
+              зачем он нужен.
+            </p>
+          </header>
+
+          <div class="script reveal">
+            <details class="beat">
+              <summary>
+                <span class="beat__n">01</span>
+                <span class="beat__quote">«Здравствуйте, это оператор сотовой связи… вы меня нормально слышите?»</span>
+                <span class="beat__plus" aria-hidden="true">+</span>
+              </summary>
+              <div class="beat__body">
+                Первая фраза решает две задачи: прикрыться «своим» (оператор связи, а не банк)
+                и получить от вас «да». После короткого согласия люди отвечают «да» и на
+                следующие вопросы.
+                <span class="beat__aim">Приём: эффект согласия и подмена роли</span>
+              </div>
+            </details>
+
+            <details class="beat">
+              <summary>
+                <span class="beat__n">02</span>
+                <span class="beat__quote">«У вас подходит к концу срок годности сим-карты»</span>
+                <span class="beat__plus" aria-hidden="true">+</span>
+              </summary>
+              <div class="beat__body">
+                У сим-карты нет «срока годности» — есть договор и тариф. Проблема выдумана,
+                но звучит технично: человек не помнит наизусть условия своего договора
+                и соглашается, что «что-то такое, наверное, есть».
+                <span class="beat__aim">Приём: техничная ложь, которую нечем проверить на месте</span>
+              </div>
+            </details>
+
+            <details class="beat">
+              <summary>
+                <span class="beat__n">03</span>
+                <span class="beat__quote">«Продление бесплатное, займёт одну минуту»</span>
+                <span class="beat__plus" aria-hidden="true">+</span>
+              </summary>
+              <div class="beat__body">
+                Снимается главный барьер — «это дорого и долго». Дальше разговор идёт
+                «пока заявка оформляется»: фоновая болтовня про связь и интернет нужна,
+                чтобы вы не успели подумать и проверить.
+                <span class="beat__aim">Приём: нулевая цена и занятость оператора</span>
+              </div>
+            </details>
+
+            <details class="beat">
+              <summary>
+                <span class="beat__n">04</span>
+                <span class="beat__quote">«Сейчас придёт СМС с номера 1414, назовите мне код»</span>
+                <span class="beat__plus" aria-hidden="true">+</span>
+              </summary>
+              <div class="beat__body">
+                Вот и цель звонка. Номер 1414 — служебный, но подпись отправителя
+                подделывается, и это не главное. Главное:
+                <mark class="hl hl--danger">код подтверждения нужен только вам</mark>.
+                Отдав его, вы подписываете операцию — не «продление», а то, что по этому
+                коду сделают дальше: восстановление доступа к аккаунту, привязку номера
+                к чужому кабинету.
+                <span class="beat__aim">Цель: код из СМС — ключ от номера и связанных сервисов</span>
+              </div>
+            </details>
+
+            <details class="beat">
+              <summary>
+                <span class="beat__n">05</span>
+                <span class="beat__quote">«Не назовёте код — номер заблокируют и внесут в чёрный список»</span>
+                <span class="beat__plus" aria-hidden="true">+</span>
+              </summary>
+              <div class="beat__body">
+                Заготовка на случай отказа. Угроза «потерять номер» страшнее, чем «потерять
+                деньги»: с номером связаны банк, «Госуслуги», вся переписка. Расчёт на то,
+                что человек испугается и назовёт код, чтобы «ничего не сломалось».
+                <span class="beat__aim">Приём: страх потери и срок «10 минут»</span>
+              </div>
+            </details>
+
+            <details class="beat">
+              <summary>
+                <span class="beat__n">06</span>
+                <span class="beat__quote">«А где вы работаете, какая зарплата, в каком банке получаете?»</span>
+                <span class="beat__plus" aria-hidden="true">+</span>
+              </summary>
+              <div class="beat__body">
+                Самый недооценённый шаг. Эти три ответа — не «проверка данных», а заготовка
+                для второго звонка: «вам звонит служба безопасности <i>вашего</i> банка,
+                мы видим, что вы получаете зарплату <i>столько-то</i>». Так подделка
+                становится правдоподобной.
+                <span class="beat__aim">Цель: данные для следующего, более дорогого звонка</span>
+              </div>
+            </details>
+
+            <details class="beat">
+              <summary>
+                <span class="beat__n">07</span>
+                <span class="beat__quote">«Бонусы: 200 минут и 5 ГБ — для сомневающихся»</span>
+                <span class="beat__plus" aria-hidden="true">+</span>
+              </summary>
+              <div class="beat__body">
+                В скрипте прямо написано, кому это предлагать: «тем, кто сомневается».
+                Подарок снижает тревогу и создаёт чувство долга — уже неудобно прервать
+                разговор «после такого предложения».
+                <span class="beat__aim">Приём: маленькая выгода вместо большой потери</span>
+              </div>
+            </details>
+
+            <details class="beat">
+              <summary>
+                <span class="beat__n">08</span>
+                <span class="beat__quote">Заготовки ответов: «почему 1414?», «зачем вам моя работа?», «как это срок закончился?»</span>
+                <span class="beat__plus" aria-hidden="true">+</span>
+              </summary>
+              <div class="beat__body">
+                В скрипте заранее прописаны ответы на ваши возражения — вплоть до фразы
+                «к сожалению, срок истёк, номер удалят из системы». Это значит, что
+                <mark class="hl hl--warn">любой ваш вопрос уже предусмотрен</mark>:
+                спором и логикой разговор не выиграть, его нужно просто завершать.
+                <span class="beat__aim">Вывод: скрипт сильнее аргументов — выключайте разговор</span>
+              </div>
+            </details>
+
+            <details class="beat">
+              <summary>
+                <span class="beat__n">09</span>
+                <span class="beat__quote">Карточка, которую оператор заполняет на вас</span>
+                <span class="beat__plus" aria-hidden="true">+</span>
+              </summary>
+              <div class="beat__body">
+                В конце скрипта — список полей, которые оператор записывает в заметку.
+                Это не разговор «на удачу», а работа по карточке: кого легче дожать,
+                кто понимает по-русски, у кого «реестр чистый», сколько адресов.
+                Ниже — как выглядит такая карточка.
+                <span class="beat__aim">Приём: приоритизация жертв</span>
+              </div>
+            </details>
+          </div>
+
+          <aside class="card-crib reveal">
+            <h3>Карточка оператора (поля из скрипта)</h3>
+            <dl class="card-crib__grid">
+              <div><dt>ФИО / имя</dt><dd>как обращаться, чтобы звучало «по-своему»</dd></div>
+              <div><dt>Дата рождения</dt><dd>возрастная группа риска</dd></div>
+              <div><dt>Место прописки</dt><dd>регион, «свой» или чужой</dd></div>
+              <div><dt>Кем представился</dt><dd>какая легенда сработала</dd></div>
+              <div><dt>Время отправки СМС</dt><dd>чтобы код пришёл «вовремя»</dd></div>
+              <div><dt>Код принят или нет</dt><dd>результат попытки</dd></div>
+              <div><dt>Реестр: чистый или ЗЧ</dt><dd>метка базы, куда попал номер</dd></div>
+              <div><dt>Адреса, сколько</dt><dd>сколько привязок к номеру</dd></div>
+              <div><dt>ИП</dt><dd>есть ли свой бизнес — значит есть счета</dd></div>
+              <div><dt>Понимает русский</dt><dd>будет ли смысл в «легенде»</dd></div>
+              <div><dt>Работает официально</dt><dd>есть ли зарплата для кредита</dd></div>
+              <div><dt>Заметка оператора</dt><dd>что ещё удалось вытянуть</dd></div>
+            </dl>
+            <p class="card-crib__note">
+              Эти поля объясняют главное: вам звонят не потому, что «в банке сбой»,
+              а потому что вы стоите в списке. И «срок годности сим-карты» придуман
+              ровно для того, чтобы заполнить эту карточку.
+            </p>
+          </aside>
+
+          <p class="script__note reveal">
+            Источник: скрипт, предоставленный для разбора. Имена, номера и названия
+            изменены, операционные детали сокращены; материал используется только как
+            учебный пример. Если с вами говорили по такому сценарию — это не ваша
+            ошибка: это отработанный конвейер, и лучший ответ на него — молча
+            положить трубку и перезвонить самому.
+          </p>
+        </div>
+      </section>
+
+      <!-- ───────────────────────── Аудитории ───────────────────────── -->
+      <section class="section" id="audiences" aria-labelledby="aud-title">
+        <div class="shell">
+          <header class="section__head reveal">
+            <p class="eyebrow">Две аудитории — два сценария</p>
+            <h2 id="aud-title">Крючок подбирают под возраст</h2>
+            <p class="section__lead">
+              Мошенники не работают «по всем». Они знают, что человеку 20 лет
+              важнее подработка, а человеку 70 — выплата и спокойствие.
+            </p>
+          </header>
+          <div class="aud">
+            <article class="aud__card reveal">
+              <h3>18–35 лет</h3>
+              <p class="aud__sub">Ставка на доход и скорость</p>
+              <ul role="list">
+                <li><b>Дропперство.</b> «Дай карту на время — заплатим». Карта становится инструментом преступления, отвечать будет владелец.</li>
+                <li><b>Вакансия с предоплатой.</b> «Оплатите обучение/форму/доступ к заказам» — после оплаты исчезают.</li>
+                <li><b>Инвестиции «с гарантией».</b> Личный кабинет рисует рост, вывести деньги нельзя — просят «налог» или «комиссию».</li>
+                <li><b>Взлом знакомого.</b> Профиль друга просит в долг в мессенджере. Проверка — звонок по голосу.</li>
+                <li><b>Маркетплейс и доставка.</b> «Оплатите доставку по ссылке», «получите компенсацию за задержку».</li>
+              </ul>
+            </article>
+            <article class="aud__card reveal">
+              <h3>60+</h3>
+              <p class="aud__sub">Ставка на страх и авторитет</p>
+              <ul role="list">
+                <li><b>«Служба безопасности банка».</b> Сценарий с «безопасным счётом» до сих пор лидирует по потерям.</li>
+                <li><b>Перерасчёт пенсии.</b> «Положена доплата, продиктуйте код» — код открывает доступ к вашему аккаунту.</li>
+                <li><b>Курьер за деньгами.</b> «Ваши сбережения в опасности, передайте их сотруднику».</li>
+                <li><b>«Родственник в беде».</b> Срочно нужны деньги, трубку передают «следователю».</li>
+                <li><b>Лечение и лекарства.</b> «Оплатите курс, пока действует скидка» — после оплаты тишина.</li>
+              </ul>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- ───────────────────────── Методика ───────────────────────── -->
+      <section class="section section--paper" id="method" aria-labelledby="method-title">
+        <div class="shell">
+          <header class="section__head reveal">
+            <p class="eyebrow">Для волонтёров и преподавателей</p>
+            <h2 id="method-title">Занятие на 45 минут</h2>
+            <p class="section__lead">
+              Сайт — не замена разговору. Ниже — сценарий, с которым его можно
+              провести в школе, колледже, вузе, центре соцобслуживания или МФЦ.
+            </p>
+          </header>
+          <ol class="method" role="list">
+            <li class="reveal"><b>0–5 мин. Вход.</b> Вопрос залу: «Кому за последний год писали или звонили “из банка”?» Поднимите руки — так группа видит, что это не редкость.</li>
+            <li class="reveal"><b>5–12 мин. Четыре шага.</b> Прокрутите раздел «Как обманывают», попросите назвать свой пример крючка.</li>
+            <li class="reveal"><b>12–25 мин. Дозор.</b> Вставьте два сообщения — своё и чужое. Разберите, какой признак сработал и почему.</li>
+            <li class="reveal"><b>25–38 мин. Тренажёр.</b> Каждый проходит десять ситуаций самостоятельно, затем обсуждаются две самые спорные.</li>
+            <li class="reveal"><b>38–43 мин. Скрипт изнутри.</b> Откройте страницу «Так это выглядит со стороны мошенника» и разберите с залом шаг 04: код из СМС нужен только вам. Затем покажите шлюз входа в начале страницы.
+            <li class="reveal"><b>43–45 мин. Договор.</b> Каждый записывает своё правило: «Я никогда не…». Озвучивают по кругу.</li>
+          </ol>
+          <p class="method__note reveal">
+            Для аудитории 60+ увеличьте кегль кнопкой «Крупный текст» в шапке
+            и оставьте на экране раздел «Куда обращаться» до конца занятия.
+          </p>
+        </div>
+      </section>
+
+      <!-- ───────────────────────── Куда обращаться ───────────────────────── -->
+      <section class="section" id="help" aria-labelledby="help-title">
+        <div class="shell">
+          <header class="section__head reveal">
+            <p class="eyebrow">Если деньги уже ушли</p>
+            <h2 id="help-title">Что делать в первые часы</h2>
+            <p class="section__lead">
+              Скорость важнее стеснения. Чем раньше банк узнает о переводе,
+              тем выше шанс остановить его по цепочке.
+            </p>
+          </header>
+          <div class="help">
+            <article class="help__card reveal">
+              <h3>1. Банк</h3>
+              <p>Позвоните по номеру с обратной стороны карты или из приложения. Сообщите о мошеннической операции и попросите заблокировать карту и спорные переводы.</p>
+            </article>
+            <article class="help__card reveal">
+              <h3>2. Полиция</h3>
+              <p>Заявление — <mark class="hl hl--thick hl--num">102</mark> или в ближайшем отделе. Сохраните переписку, скриншоты, чеки, номера, с которых звонили: это доказательства.</p>
+            </article>
+            <article class="help__card reveal">
+              <h3>3. Экстренные службы</h3>
+              <p>Единый номер <mark class="hl hl--thick hl--num">112</mark>. Для консультации по финансовым услугам — приёмная Банка России и портал «Финансовая культура».</p>
+            </article>
+            <article class="help__card reveal">
+              <h3>4. Проверка сайта и организации</h3>
+              <p>Сведения о лицензии финансовой организации есть на сайте Банка России. Нет лицензии — нет права принимать деньги.</p>
+            </article>
+          </div>
+          <p class="help__warn reveal">
+            Не платите «за возврат денег», не сообщайте коды из СМС никому — ни
+            «сотруднику банка», ни «следователю», ни родственнику в мессенджере.
+            Настоящий сотрудник не спросит код никогда.
+          </p>
+        </div>
+      </section>
+
+      <!-- ───────────────────────── О проекте ───────────────────────── -->
+      <section class="section section--dark" id="about" aria-labelledby="about-title">
+        <div class="shell about">
+          <div class="reveal">
+            <h2 id="about-title">О проекте</h2>
+            <p>
+              «НЕ КЛЮЙ» — просветительский проект о цифровом финансовом
+              мошенничестве для жителей Краснодарского края. Сборка статическая,
+              без фреймворков и CDN: вся логика работает в браузере, сайт
+              открывается и без интернета. Единственный сетевой запрос —
+              определение IP-адреса и провайдера в окне входа (открытые сервисы
+              ipwho.is и ipinfo.io): он нужен, чтобы показать настоящие данные,
+              а не нарисованные. Ничего из увиденного никуда не отправляется
+              и не сохраняется.
+            </p>
+            <p>
+              Материал подготовлен для краевого конкурса «На волне финансов»
+              в 2026 году. Автор — студент Кубанского государственного аграрного
+              университета. Номинация и состав авторов указаны в заявке.
+            </p>
+            <p class="about__disclaimer">
+              Это образовательный материал, а не юридическая или финансовая
+              консультация. Оценки риска в разборе сообщений — эвристика, а не
+              заключение эксперта. Решение о переводе средств всегда остаётся
+              за вами.
+            </p>
+          </div>
+          <div class="about__links reveal">
+            <h3>Источники и полезные ссылки</h3>
+            <ul role="list">
+              <li><a href="https://cbr.ru" rel="noopener noreferrer" target="_blank">Банк России — cbr.ru</a></li>
+              <li><a href="https://fincult.info" rel="noopener noreferrer" target="_blank">«Финансовая культура» — fincult.info</a></li>
+              <li><a href="https://www.gosuslugi.ru" rel="noopener noreferrer" target="_blank">Госуслуги — gosuslugi.ru</a></li>
+              <li><a href="https://моифинансы.рф" rel="noopener noreferrer" target="_blank">«Мои финансы» — моифинансы.рф</a></li>
+            </ul>
+            <p class="about__note">
+              Ссылки ведут на официальные ресурсы. Перед публикацией работы
+              перечень сверяется с действующими адресами.
+            </p>
+            <button class="btn btn--ghost" type="button" id="replay-gate" style="margin-top:1rem">
+              Показать окно входа ещё раз
+            </button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <div class="shell foot__inner">
+        <p class="foot__brand">НЕ КЛЮЙ</p>
+        <p class="foot__meta">
+          Краснодарский край · 2026 · данные не собираются, куки не используются
+        </p>
+        <a class="foot__up" href="#top">Наверх</a>
+      </div>
+    </footer>
+  </body>
+</html>

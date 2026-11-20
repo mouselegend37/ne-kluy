@@ -1,0 +1,15 @@
+tools/figma-out/
+tools/.figma-token
+tools/polyhaven/hdri/*.hdr
+tools/polyhaven/models/
+tools/figma-in/*
+!tools/figma-in/README.txt
+
+node_modules/
+dist/
+tools/voices/
+tools/voice-sample/
+tools/__pycache__/
+tools/figma-out/
+*.log
+.DS_Store

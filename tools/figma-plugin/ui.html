@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font: 11px/1.5 "Inter", system-ui, sans-serif;
+    margin: 0; padding: 12px;
+    color: var(--figma-color-text, #1a1a1a);
+    background: var(--figma-color-bg, #fff);
+    display: flex; flex-direction: column; gap: 8px; height: 100vh;
+  }
+  h1 { font-size: 12px; margin: 0; letter-spacing: .01em; }
+  p.hint { margin: 0; opacity: .65; font-size: 10px; }
+  textarea {
+    flex: 1; min-height: 120px; resize: none; width: 100%;
+    font: 10px/1.45 ui-monospace, "JetBrains Mono", Consolas, monospace;
+    padding: 8px; border-radius: 6px;
+    border: 1px solid var(--figma-color-border, #d5d5d5);
+    background: var(--figma-color-bg-secondary, #f7f7f7);
+    color: inherit;
+  }
+  .row { display: flex; gap: 6px; }
+  button {
+    flex: 1; padding: 7px 10px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--figma-color-border, #d5d5d5);
+    background: var(--figma-color-bg-secondary, #f2f2f2);
+    color: inherit; font: inherit; font-weight: 500;
+  }
+  button.primary {
+    background: var(--figma-color-bg-brand, #0d99ff);
+    border-color: transparent; color: var(--figma-color-text-onbrand, #fff);
+  }
+  #status { font-size: 10px; min-height: 14px; opacity: .8; }
+</style>
+</head>
+<body>
+  <h1>NE-KLUY bridge</h1>
+  <p class="hint">Выделите слой и нажмите «Экспорт» — получите JSON для ассистента. Вставьте JSON и нажмите «Собрать» — плагин отрисует его во Figma.</p>
+  <div class="row">
+    <button id="export" class="primary">Экспорт выделения</button>
+    <button id="copy">Скопировать</button>
+  </div>
+  <textarea id="json" spellcheck="false" placeholder='{ "nodes": [ … ] }'></textarea>
+  <div class="row">
+    <button id="import" class="primary">Собрать во Figma</button>
+    <button id="clear">Очистить</button>
+  </div>
+  <div id="status"></div>
+  <script>
+    const area = document.getElementById("json");
+    const status = document.getElementById("status");
+    const notify = (text) => { status.textContent = text; };
+
+    parent.postMessage({ pluginMessage: { type: "export" } }, "*");
+
+    document.getElementById("export").onclick = () => {
+      parent.postMessage({ pluginMessage: { type: "export" } }, "*");
+    };
+
+    document.getElementById("copy").onclick = async () => {
+      if (!area.value.trim()) { notify("Сначала экспортируйте слой."); return; }
+      try {
+        await navigator.clipboard.writeText(area.value);
+        notify("JSON в буфере обмена.");
+      } catch (error) {
+        area.select();
+        document.execCommand("copy");
+        notify("JSON скопирован.");
+      }
+    };
+
+    document.getElementById("import").onclick = () => {
+      if (!area.value.trim()) { notify("Вставьте JSON."); return; }
+      parent.postMessage({ pluginMessage: { type: "import", text: area.value } }, "*");
+    };
+
+    document.getElementById("clear").onclick = () => {
+      area.value = "";
+      notify("Поле очищено.");
+    };
+
+    window.onmessage = (event) => {
+      const message = event.data.pluginMessage;
+      if (!message) return;
+      if (message.type === "json") {
+        area.value = message.text;
+        notify("Готово: JSON можно копировать.");
+      }
+      if (message.type === "status") notify(message.text);
+    };
+  </script>
+</body>
+</html>
