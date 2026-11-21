@@ -780,14 +780,9 @@ function drawNotifications(ctx, state) {
 function drawLockLayer(ctx, state) {
   ctx.setTransform(TEXTURE_SCALE, 0, 0, TEXTURE_SCALE, 0, 0);
   ctx.clearRect(0, 0, DESIGN.w, DESIGN.h);
-  /* Шторка должна быть плотной: под ней может оказаться уже экран вызова,
-     и сквозь прозрачные места он просвечивал. Теперь у слоя свои обои. */
-  ctx.save();
-  roundRect(ctx, 0, 0, DESIGN.w, DESIGN.h, 74);
-  ctx.clip();
-  drawWallpaper(ctx);
-  ctx.restore();
-
+  /* Слой — только контент (часы, уведомления, индикатор). Фон под ним —
+     обои экрана: так шторка уезжает по обоям, а не тянет за собой
+     чёрную плашку. При протяжке контент уходит в расфокус (см. blurs). */
   drawStatusBar(ctx, state);
 
   ctx.textAlign = "center";
@@ -1227,6 +1222,42 @@ export function initPhone() {
     depthWrite: false,
     opacity: 1,
   });
+  /* Расфокус контента при протяжке: три уровня резкости, построенные
+     заранее (в половинном разрешении — на глаз не отличить, а вдвое дешевле). */
+  const blurTextures = [];
+  let blurDirty = true;
+  let blurTimer = 0;
+  const buildBlurs = () => {
+    if (!blurDirty) return;
+    blurDirty = false;
+    while (blurTextures.length) {
+      const old = blurTextures.pop();
+      if (old !== layerTexture) old.dispose();
+    }
+    const radii = [0, 2.5, 5, 9];
+    radii.forEach((r) => {
+      if (r === 0) { blurTextures.push(layerTexture); return; }
+      const c = document.createElement("canvas");
+      c.width = Math.max(2, Math.round(layerCanvas.width / 2));
+      c.height = Math.max(2, Math.round(layerCanvas.height / 2));
+      const bx = c.getContext("2d");
+      if (!("filter" in bx)) { blurTextures.push(layerTexture); return; }
+      bx.filter = `blur(${(r * TEXTURE_SCALE * 0.5).toFixed(1)}px)`;
+      bx.drawImage(layerCanvas, 0, 0, c.width, c.height);
+      const t = new THREE.CanvasTexture(c);
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy() || 8);
+      blurTextures.push(t);
+    });
+  };
+  const setLayerSharpness = (level) => {
+    if (!blurTextures.length) return;
+    const next = blurTextures[Math.min(level, blurTextures.length - 1)] || layerTexture;
+    if (layerMat.map === next) return;
+    layerMat.map = next;
+    layerMat.needsUpdate = true;
+  };
+
   const lockLayer = new THREE.Mesh(roundedPlane(screenW, screenH, (74 / DESIGN.w) * screenW), layerMat);
   lockLayer.position.z = depth / 2 + 0.068;
   // Слой уезжает за верхний край экрана, поэтому режем его плоскостью —
@@ -1804,6 +1835,9 @@ export function initPhone() {
   const paintLayer = () => {
     drawLockLayer(lctx, state);
     layerTexture.needsUpdate = true;
+    blurDirty = true;
+    clearTimeout(blurTimer);
+    blurTimer = setTimeout(buildBlurs, 90);
   };
 
   let ticker = null;
@@ -2656,7 +2690,10 @@ export function initPhone() {
          середине жеста человек видит пустые обои: это и выглядело как
          «шторка исчезла». Рисуем его заранее и возвращаем обои, если
          жест отменили. */
-      if (!revealed && u > UNLOCK_THRESHOLD + 0.08) {
+      /* Экран входящего рисуем сразу, как только началось движение:
+         иначе на середине жеста под шторкой сменяются обои на звонок
+         и это читается как «экран потемнел». */
+      if (!revealed && u > 0.02) {
         revealed = true;
         const keep = state.view;
         state.view = "call";
@@ -2671,13 +2708,18 @@ export function initPhone() {
          непрозрачна (по жалобе «исчезает почти сразу»), и только на
          последних сантиметрах уходит в прозрачность. */
       const vanish = clamp01((u - 0.55) / 0.45);
-      layerMat.opacity = 1 - vanish * 0.4;
+      layerMat.opacity = 1 - vanish * 0.5;
+      /* Чем дальше уехала шторка, тем сильнее расфокус контента:
+         на настоящем экране блокировки часы и уведомления мутнеют,
+         а не уезжают резкой картинкой. */
+      setLayerSharpness(u > 0.62 ? 3 : u > 0.36 ? 2 : u > 0.12 ? 1 : 0);
       // лёгкий уход в глубину — шторка отъезжает, а не просто скользит
-      const shrink = 1 - vanish * 0.03;
+      const shrink = 1 - vanish * 0.05;
       lockLayer.scale.set(shrink, shrink, 1);
     } else {
       lockLayer.visible = false;
       lockLayer.scale.set(1, 1, 1);
+      setLayerSharpness(0);
     }
 
     if (state.sms) {
