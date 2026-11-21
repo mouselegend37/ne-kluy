@@ -697,8 +697,8 @@ function drawNotificationCard(ctx, card, x, y, w, h, alpha = 1, maxLines = 2) {
   // подложка: тёмная плотная база + светлое стекло сверху.
   // Так текст читается поверх любых обоев, а не просвечивает лентами.
   const glass = ctx.createLinearGradient(x, y, x, y + h);
-  glass.addColorStop(0, "rgba(44, 21, 28, 0.66)");
-  glass.addColorStop(1, "rgba(28, 14, 20, 0.62)");
+  glass.addColorStop(0, "rgba(44, 21, 28, 0.84)");
+  glass.addColorStop(1, "rgba(28, 14, 20, 0.8)");
   ctx.fillStyle = glass;
   ctx.fill();
   const sheen = ctx.createLinearGradient(x, y, x, y + h);
