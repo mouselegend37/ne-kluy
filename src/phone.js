@@ -1975,6 +1975,8 @@ export function initPhone() {
   const playSmsTone = () => {
     const ac = ensureAudio();
     if (!ac) return;
+    // контекст мог быть усыплён после прошлого разговора
+    ac.resume?.();
     const now = ac.currentTime;
     [1046.5, 1318.5, 1568].forEach((freq, i) => {
       const osc = ac.createOscillator();
@@ -2841,11 +2843,14 @@ export function initPhone() {
       /* Прокрутка сценария без rAF: шаг фиксированный, время честное. */
       simulate: (seconds, step = 1 / 60) => {
         fixedDt = step;
-        const steps = Math.round(seconds / step);
-        for (let i = 0; i < steps; i += 1) tick();
-        fixedDt = 0;
-        renderer.render(scene, camera);
-        return steps;
+        try {
+          const steps = Math.round(seconds / step);
+          for (let i = 0; i < steps; i += 1) tick();
+          return steps;
+        } finally {
+          fixedDt = 0;
+          renderer.render(scene, camera);
+        }
       },
       probe: () => ({
         rotY: +group.rotation.y.toFixed(3),
