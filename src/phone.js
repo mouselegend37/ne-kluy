@@ -780,6 +780,14 @@ function drawNotifications(ctx, state) {
 function drawLockLayer(ctx, state) {
   ctx.setTransform(TEXTURE_SCALE, 0, 0, TEXTURE_SCALE, 0, 0);
   ctx.clearRect(0, 0, DESIGN.w, DESIGN.h);
+  /* Шторка должна быть плотной: под ней может оказаться уже экран вызова,
+     и сквозь прозрачные места он просвечивал. Теперь у слоя свои обои. */
+  ctx.save();
+  roundRect(ctx, 0, 0, DESIGN.w, DESIGN.h, 74);
+  ctx.clip();
+  drawWallpaper(ctx);
+  ctx.restore();
+
   drawStatusBar(ctx, state);
 
   ctx.textAlign = "center";
@@ -1160,6 +1168,46 @@ export function initPhone() {
   const screen = new THREE.Mesh(screenGeometry, screenMat);
   screen.position.z = depth / 2 + 0.052;
   group.add(screen);
+
+  /* Мягкая смена экрана: снимок предыдущего кадра тает поверх нового —
+     переход «блокировка → входящий» больше не щёлкает. */
+  const fadeCanvas = document.createElement("canvas");
+  fadeCanvas.width = screenCanvas.width;
+  fadeCanvas.height = screenCanvas.height;
+  const fadeCtx = fadeCanvas.getContext("2d");
+  const fadeTexture = new THREE.CanvasTexture(fadeCanvas);
+  fadeTexture.colorSpace = THREE.SRGBColorSpace;
+  const fadeMat = new THREE.MeshBasicMaterial({
+    map: fadeTexture,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    toneMapped: false,
+  });
+  const fadeMesh = new THREE.Mesh(screenGeometry, fadeMat);
+  fadeMesh.position.z = screen.position.z + 0.0015;
+  fadeMesh.visible = false;
+  group.add(fadeMesh);
+
+  let fadeAt = 0;
+  let fadeGuard = 0;
+  const crossfade = () => {
+    fadeCanvas.width = screenCanvas.width;
+    fadeCanvas.height = screenCanvas.height;
+    fadeCtx.clearRect(0, 0, fadeCanvas.width, fadeCanvas.height);
+    fadeCtx.drawImage(screenCanvas, 0, 0);
+    fadeTexture.needsUpdate = true;
+    fadeMat.opacity = 1;
+    fadeMesh.visible = true;
+    fadeAt = performance.now();
+    /* Страховка: если цикл кадров остановится (вкладка ушла в фон),
+       снимок не должен остаться висеть поверх экрана. */
+    if (fadeGuard) clearTimeout(fadeGuard);
+    fadeGuard = setTimeout(() => {
+      fadeMat.opacity = 0;
+      fadeMesh.visible = false;
+    }, 600);
+  };
 
   /* Слой блокировки: часы и уведомления лежат отдельной текстурой.
      При свайпе мы двигаем этот меш и гасим прозрачность — ни одной
@@ -2103,6 +2151,10 @@ export function initPhone() {
       state.notifications = makeNotifications();
       paintLayer();
     }
+    if (id === "incoming") {
+      /* после свайпа экран уже звонок: подпись должна это отражать */
+      if (status) status.textContent = "входящий · 00:00";
+    }
     if (id === "hello") {
       state.mode = "active";
       startTicker();
@@ -2123,6 +2175,7 @@ export function initPhone() {
       quietAudio();
       if (volumeBox) volumeBox.hidden = true;
       playHangup();
+      crossfade();
       paint();
       if (status) status.textContent = `разговор завершён · ${state.timer}`;
     }
@@ -2198,6 +2251,7 @@ export function initPhone() {
     paintLayer();
     if (status) status.textContent = "";
     renderLockKeys();
+    crossfade();
   };
 
   reset?.addEventListener("click", restart);
@@ -2250,16 +2304,18 @@ export function initPhone() {
 
   /* Телефон можно взять и крутить: тянем мышью или пальцем в любую сторону,
      угол ограничен ±77° по горизонтали и ±48° по вертикали. */
-  const swipe = { active: false, pointerId: null, startY: 0 };
+  const swipe = { active: false, pointerId: null, startY: 0, lastMoveAt: 0 };
   let unlocking = false;
+  let revealed = false;
   let unlockStartedAt = 0;
   let unlockFrom = 0;
-  /* Разблокировка — как в iOS: экран должен уехать хотя бы до половины.
-     До этого отпускание возвращает его назад. */
-  const UNLOCK_THRESHOLD = 0.5;
+  /* Разблокировка — как в iOS: экран должен уехать почти до половины,
+     а если дотянуть до самого верха — открывается само, без отпускания. */
+  const UNLOCK_THRESHOLD = 0.42;
+  const UNLOCK_SNAP = 0.9;
 
   const finishUnlock = () => {
-    if (!introDone || state.view !== "locked" || unlocking) return;
+    if (state.view !== "locked" || unlocking) return;
     unlocking = true;
     unlockStartedAt = performance.now();
     unlockFrom = state.unlock ?? 0;
@@ -2317,7 +2373,9 @@ export function initPhone() {
       swipe.active = true;
       swipe.pointerId = event.pointerId;
       swipe.startY = event.clientY;
+      swipe.lastMoveAt = performance.now();
       unlocking = false; // новый жест отменяет прежний досчёт
+      revealed = false;
       try {
         canvas.setPointerCapture(event.pointerId);
       } catch {
@@ -2355,6 +2413,7 @@ export function initPhone() {
          Никакого paint() здесь — слой уже отдельный меш, перерисовка давала «20 fps». */
       const dy = (event.clientY - swipe.startY) / Math.max(1, canvas.clientHeight);
       state.unlock = clamp(-dy, 0, 1);
+      swipe.lastMoveAt = performance.now();
       return;
     }
     if (grab.active && event.pointerId === grab.pointerId) {
@@ -2462,6 +2521,8 @@ export function initPhone() {
       TEXTURE_SCALE = wanted;
       screenCanvas.width = DESIGN.w * TEXTURE_SCALE;
       screenCanvas.height = DESIGN.h * TEXTURE_SCALE;
+      fadeCanvas.width = screenCanvas.width;
+      fadeCanvas.height = screenCanvas.height;
       layerCanvas.width = DESIGN.w * TEXTURE_SCALE;
       layerCanvas.height = DESIGN.h * TEXTURE_SCALE;
       texture.needsUpdate = true;
@@ -2474,6 +2535,8 @@ export function initPhone() {
   };
 
   let visible = true;
+  /* Отладочный флаг: держит цикл кадров живым, даже если наблюдатель говорит иное. */
+  let forceVisible = false;
   let frame = 0;
   let lastRepaint = 0;
   let lastAnimPaint = 0;
@@ -2530,7 +2593,7 @@ export function initPhone() {
 
   const loop = () => {
     // вне экрана не рисуем вовсе: телефон может висеть ниже вьюпорта
-    if (!visible) {
+    if (!forceVisible && !visible) {
       frame = 0;
       return;
     }
@@ -2556,12 +2619,18 @@ export function initPhone() {
 
     if (state.view === "locked") {
       lockLayer.visible = true;
+      /* Сторожевой таймер: если указатель «потерялся» (отпустили за окном,
+         не пришёл pointerup), жест не должен висеть и держать слой за краем. */
+      if (swipe.active && now - swipe.lastMoveAt > 1500) endSwipe();
+
+      /* Дотянул до самого верха — открываем, не ждём отпускания. */
+      if (swipe.active && !unlocking && (state.unlock ?? 0) >= UNLOCK_SNAP) finishUnlock();
+
       if (unlocking) {
-        // свайп принят: слой уезжает вверх и тает, обои остаются на месте
-        const k = clamp01((now - unlockStartedAt) / 460);
-        const eased = k < 0.5 ? 4 * k * k * k : 1 - (-2 * k + 2) ** 3 / 2;
-        state.unlock = Math.min(1, unlockFrom + (1 - unlockFrom) * eased);
-        if (state.unlock >= 1) {
+        // свайп принят: слой уезжает вверх до конца
+        const prev = state.unlock ?? 0;
+        state.unlock = Math.min(1, prev + (1 - prev) * (1 - Math.exp(-dt / 0.1)));
+        if (state.unlock >= 0.995) {
           unlocking = false;
           state.unlock = 0;
           state.view = "call";
@@ -2569,6 +2638,9 @@ export function initPhone() {
           lockLayer.position.y = 0;
           lockLayer.scale.set(1, 1, 1);
           layerMat.opacity = 1;
+          revealed = false;
+          swipe.active = false;
+          swipe.pointerId = null;
           go("incoming");
           paint();
         }
@@ -2580,14 +2652,28 @@ export function initPhone() {
         if (state.unlock < 0.004) state.unlock = 0;
       }
       const u = state.unlock ?? 0;
-      lockLayer.position.y = u * 3.95;
-      /* Плашка не должна таять на старте жеста: до половины она полностью
+      /* Под уезжающей шторкой сразу должен быть экран вызова, иначе на
+         середине жеста человек видит пустые обои: это и выглядело как
+         «шторка исчезла». Рисуем его заранее и возвращаем обои, если
+         жест отменили. */
+      if (!revealed && u > UNLOCK_THRESHOLD + 0.08) {
+        revealed = true;
+        const keep = state.view;
+        state.view = "call";
+        paint();
+        state.view = keep;
+      } else if (revealed && u < UNLOCK_THRESHOLD && !unlocking) {
+        revealed = false;
+        paint();
+      }
+      lockLayer.position.y = u * (screenH + 0.15);
+      /* Плашка не должна таять на старте жеста: до 55% хода она полностью
          непрозрачна (по жалобе «исчезает почти сразу»), и только на
          последних сантиметрах уходит в прозрачность. */
       const vanish = clamp01((u - 0.55) / 0.45);
-      layerMat.opacity = 1 - vanish * 0.55;
+      layerMat.opacity = 1 - vanish * 0.4;
       // лёгкий уход в глубину — шторка отъезжает, а не просто скользит
-      const shrink = 1 - vanish * 0.04;
+      const shrink = 1 - vanish * 0.03;
       lockLayer.scale.set(shrink, shrink, 1);
     } else {
       lockLayer.visible = false;
@@ -2766,6 +2852,17 @@ export function initPhone() {
       islandDot.material.opacity = 0.45 + 0.35 * Math.abs(Math.sin(t * 1.6));
     }
 
+    /* Затухание снимка предыдущего экрана — плавная смена кадра. */
+    if (fadeMesh.visible) {
+      const k = clamp01((now - fadeAt) / 340);
+      const eased = 1 - (1 - k) ** 2;
+      fadeMat.opacity = 1 - eased;
+      if (k >= 1) {
+        fadeMesh.visible = false;
+        fadeMat.opacity = 0;
+      }
+    }
+
     if (animPaint && now - lastAnimPaint > 40) {
       lastAnimPaint = now;
       paint();
@@ -2840,6 +2937,14 @@ export function initPhone() {
         updateRings(at);
         renderer.render(scene, camera);
       },
+      /* Принудительно запустить цикл кадров: в headless-превью
+         IntersectionObserver молчит и rAF не крутится. */
+      show: () => {
+        visible = true;
+        startIntro();
+        if (!frame) loop();
+        return true;
+      },
       /* Прокрутка сценария без rAF: шаг фиксированный, время честное. */
       simulate: (seconds, step = 1 / 60) => {
         fixedDt = step;
@@ -2863,6 +2968,10 @@ export function initPhone() {
         unlock: +(state.unlock ?? 0).toFixed(3),
         view: state.view,
         mode: state.mode,
+        introDone,
+        swipeActive: swipe.active,
+        unlocking,
+        fade: +fadeMat.opacity.toFixed(2),
         glowOpacity: +glow.material.opacity.toFixed(3),
         audio: audioCtx ? audioCtx.state : null,
         voice: voice ? "играет" : "нет",
