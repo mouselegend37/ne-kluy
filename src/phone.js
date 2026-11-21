@@ -1000,6 +1000,54 @@ function makeGlowTexture() {
   return canvas;
 }
 
+/**
+ * Нимб вокруг силуэта: мягкая светящаяся рамка. Плоскость с этой текстурой
+ * масштабируется по проекции габаритов корпуса, поэтому свет как будто
+ * облегает аппарат и сжимается вместе с ним, когда телефон ставят ребром.
+ */
+function makeHaloTexture() {
+  const size = 512;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  const pad = 150;
+  const x0 = pad;
+  const y0 = pad;
+  const w = size - pad * 2;
+  const h = size - pad * 2;
+  const r = Math.min(w, h) * 0.42;
+  const path = new Path2D();
+  path.moveTo(x0 + r, y0);
+  path.lineTo(x0 + w - r, y0);
+  path.quadraticCurveTo(x0 + w, y0, x0 + w, y0 + r);
+  path.lineTo(x0 + w, y0 + h - r);
+  path.quadraticCurveTo(x0 + w, y0 + h, x0 + w - r, y0 + h);
+  path.lineTo(x0 + r, y0 + h);
+  path.quadraticCurveTo(x0, y0 + h, x0, y0 + h - r);
+  path.lineTo(x0, y0 + r);
+  path.quadraticCurveTo(x0, y0, x0 + r, y0);
+  path.closePath();
+
+  // три прохода: широкое грязное свечение → среднее → тонкое ядро
+  ctx.shadowColor = "rgba(255, 118, 146, 0.9)";
+  ctx.shadowBlur = 86;
+  ctx.strokeStyle = "rgba(255, 126, 152, 0.14)";
+  ctx.lineWidth = 30;
+  ctx.stroke(path);
+
+  ctx.shadowBlur = 44;
+  ctx.strokeStyle = "rgba(255, 150, 172, 0.35)";
+  ctx.lineWidth = 12;
+  ctx.stroke(path);
+
+  ctx.shadowBlur = 16;
+  ctx.strokeStyle = "rgba(255, 202, 214, 0.75)";
+  ctx.lineWidth = 3.5;
+  ctx.stroke(path);
+  return canvas;
+}
+
 /* ── инициализация ───────────────────────────────────────────────── */
 
 const escapeHtml = (value) =>
@@ -1582,9 +1630,21 @@ export function initPhone() {
   glass.position.z = screen.position.z + 0.002;
   group.add(glass);
 
-  /* подсветка за телефоном */
+  /* ── фоновый свет и сигналы вызова ─────────────────────────────────
+     Раньше оба слоя лежали ВНУТРИ группы телефона: ореол поворачивался
+     вместе с корпусом и вставал ребром («видно, что это текстура»),
+     а кольца стояли на фиксированной глубине −0.55 и при развороте
+     корпуса оказывались в его толще — просвечивали сквозь экран.
+     Теперь свет живёт в сцене, всегда в плоскости кадра, а глубину
+     получает в каждом кадре: ровно за габаритом, который телефон
+     занимает по Z при текущем повороте. */
+
+  const backFx = new THREE.Group();
+  scene.add(backFx);
+
+  /* широкое мягкое пятно: «воздух», который подсвечивает телефон */
   const glow = new THREE.Mesh(
-    new THREE.PlaneGeometry(5.6, 5.6),
+    new THREE.PlaneGeometry(4.7, 4.7),
     new THREE.MeshBasicMaterial({
       map: new THREE.CanvasTexture(makeGlowTexture()),
       transparent: true,
@@ -1593,14 +1653,28 @@ export function initPhone() {
       opacity: 0.55,
     }),
   );
-  glow.position.z = -0.8;
-  group.add(glow);
+  glow.position.z = -1.2;
+  backFx.add(glow);
 
-  /* сигналы вызова: расходящиеся кольца.
-     Живут в отдельной группе, не в телефоне: при перевороте корпуса они
-     должны оставаться за ним, иначе кольца окажутся поверх экрана. */
+  /* нимб по силуэту: масштаб считается из проекции габаритов корпуса,
+     поэтому при повороте он сжимается вместе с силуэтом и «облегает»
+     телефон, а не висит плоской картинкой позади. */
+  const halo = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({
+      map: new THREE.CanvasTexture(makeHaloTexture()),
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      opacity: 0.5,
+    }),
+  );
+  halo.position.z = -1.1;
+  backFx.add(halo);
+
+  /* сигналы вызова: расходящиеся кольца — только фон, за корпусом */
   const signalGroup = new THREE.Group();
-  signalGroup.position.z = -0.55;
+  signalGroup.position.z = -1.3;
   scene.add(signalGroup);
   const ringTexture = new THREE.CanvasTexture(makeRingTexture());
   const rings = Array.from({ length: 7 }, () => {
@@ -1806,49 +1880,85 @@ export function initPhone() {
   applyVolume();
 
   const stopVoice = () => {
-    if (!voice) return;
-    voice.onended = null;
-    voice.onerror = null;
-    voice.pause();
+    const el = voice;
     voice = null;
     document.querySelector(".call__rec")?.classList.remove("is-speaking");
+    if (!el) return;
+    el.onended = null;
+    el.onerror = null;
+    try {
+      el.pause();
+    } catch {
+      /* уже остановлен */
+    }
+    try {
+      el.currentTime = 0;
+    } catch {
+      /* нет метаданных */
+    }
+    /* Без этого элемент держит декодер и поток открытыми: после разговора
+       браузер продолжает показывать «звук играет», а в наушниках слышен шум. */
+    try {
+      el.removeAttribute("src");
+      el.load();
+    } catch {
+      /* не критично */
+    }
+  };
+
+  /**
+   * Полная тишина после разговора: обрываем реплику, снимаем индикатор
+   * записи и усыпляем звуковой граф. Гудок отбоя при этом успевает доиграть.
+   */
+  let sleepTimer = 0;
+  const quietAudio = (delay = 1600) => {
+    stopVoice();
+    if (sleepTimer) clearTimeout(sleepTimer);
+    sleepTimer = setTimeout(() => {
+      sleepTimer = 0;
+      if (audioCtx && audioCtx.state === "running") audioCtx.suspend?.().catch(() => {});
+    }, delay);
   };
 
   /** Голос мошенника: ждём окончания реплики, но не бесконечно. */
   const playVoice = (url, onEnd) => {
     stopVoice();
     let finished = false;
+    const el = new Audio(url);
+    voice = el;
     const finish = () => {
       if (finished) return;
       finished = true;
+      /* Если реплику уже оборвали (отбой, «Начать заново», новый звонок),
+         страховочный таймер не должен двигать диалог дальше. */
+      if (voice !== el) return;
       onEnd();
     };
     try {
-      voice = new Audio(url);
-      voice.preload = "auto";
-      voice.crossOrigin = "anonymous";
+      el.preload = "auto";
+      el.crossOrigin = "anonymous";
       // через фильтры проходит только этот элемент; если WebAudio недоступен,
       // остаётся обычное воспроизведение
       const ctx = ensureAudio();
       if (ctx && voiceInput) {
         ctx.resume?.();
         try {
-          ctx.createMediaElementSource(voice).connect(voiceInput);
+          ctx.createMediaElementSource(el).connect(voiceInput);
         } catch {
           /* элемент уже был подключён — играем как есть */
         }
       }
       applyVolume();
-      voice.onended = () => {
+      el.onended = () => {
         document.querySelector(".call__rec")?.classList.remove("is-speaking");
         finish();
       };
-      voice.onerror = () => {
+      el.onerror = () => {
         document.querySelector(".call__rec")?.classList.remove("is-speaking");
         setTimeout(finish, 2400);
       };
       document.querySelector(".call__rec")?.classList.add("is-speaking");
-      voice.play().catch(() => setTimeout(finish, 2400));
+      el.play().catch(() => setTimeout(finish, 2400));
       setTimeout(finish, 30000); // страховка: диалог не должен застрять
     } catch {
       finish();
@@ -2008,7 +2118,7 @@ export function initPhone() {
     if (node.screen === "ended") {
       state.mode = "ended";
       stopTicker();
-      stopVoice();
+      quietAudio();
       if (volumeBox) volumeBox.hidden = true;
       playHangup();
       paint();
@@ -2051,7 +2161,13 @@ export function initPhone() {
     generation += 1;
     gaveCode = false;
     stopTicker();
-    stopVoice();
+    quietAudio(0);
+    // сигналы вызова с прошлого прохода не должны висеть на новом
+    ringsAt = -1;
+    rings.forEach((ring) => {
+      ring.mesh.visible = false;
+      ring.mesh.material.opacity = 0;
+    });
     log.innerHTML = "";
     choices.innerHTML = "";
     if (reset) reset.hidden = true;
@@ -2166,6 +2282,8 @@ export function initPhone() {
   const manual = { y: 0, x: 0 };
   /* инерция: отпустил телефон на ходу — он ещё немного докручивается сам */
   const spin = { y: 0, x: 0 };
+  /* возврат в исходное положение по двойному клику — анимированный */
+  const home = { active: false, fromY: 0, fromX: 0, at: 0 };
   let lastGrabAt = 0;
 
   const releaseGrab = (event) => {
@@ -2289,18 +2407,28 @@ export function initPhone() {
     hovering = true;
   });
 
-  // двойной клик — вернуть телефон в исходное положение
+  // двойной клик — плавно вернуть телефон в исходное положение
   canvas.addEventListener("dblclick", () => {
-    manual.y = 0;
-    manual.x = 0;
+    home.active = true;
+    home.fromY = manual.y;
+    home.fromX = manual.x;
+    home.at = performance.now();
   });
 
   /* ── заставка: спина → дрожь и сигналы → переворот ─────────────── */
 
-  const TIMELINE = { backEnd: 1.6, flipStart: 3.5, flipEnd: 4.7, ready: 5.1 };
+  const TIMELINE = { backEnd: 1.6, flipStart: 3.45, flipEnd: 4.85, ready: 5.25 };
   let introStart = -1;
+  /* Отдельное время жизни колец: раньше они обновлялись только внутри
+     ветки заставки, и последнее кольцо, стартовавшее на 4.35 с, застревало
+     на экране навсегда — при повороте телефона оно «плавало» вокруг него. */
+  let ringsAt = -1;
+  const RINGS_TOTAL = 5.9;
   let introDone = isReduced;
   const easeInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
+  /* smoothstep мягче кубического ease: максимальная скорость вдвое ниже —
+     переворот перестаёт «прыгать» в середине. */
+  const smoothstep = (t) => t * t * (3 - 2 * t);
   const easeOut = (t) => 1 - (1 - t) ** 3;
   const clamp01 = (v) => Math.min(1, Math.max(0, v));
   const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
@@ -2308,6 +2436,7 @@ export function initPhone() {
   const startIntro = () => {
     if (introStart >= 0 || introDone) return;
     introStart = performance.now();
+    ringsAt = introStart;
     RING_TIMES.forEach((time, index) => {
       rings[index].start = time;
     });
@@ -2347,6 +2476,9 @@ export function initPhone() {
   let lastRepaint = 0;
   let lastAnimPaint = 0;
   const startedAt = performance.now();
+  let lastFrameAt = startedAt;
+  /* Только для отладки: даёт прокручивать время вручную там, где rAF стоит. */
+  let fixedDt = 0;
   const target = { x: 0, y: 0 };
   const pointer = { x: 0, y: 0 };
 
@@ -2401,6 +2533,7 @@ export function initPhone() {
       return;
     }
     frame = requestAnimationFrame(loop);
+    if (window.__phoneFrames !== undefined) window.__phoneFrames += 1;
     try {
       tick();
     } catch (error) {
@@ -2414,18 +2547,25 @@ export function initPhone() {
 
     let animPaint = false;
 
+    /* Шаг времени: сглаживания на фиксированном коэффициенте ведут себя
+       по-разному на 60 и 120 Гц — отсюда и ощущение «рваности». Считаем dt. */
+    const dt = fixedDt || clamp((now - lastFrameAt) / 1000, 0.001, 0.05);
+    lastFrameAt = now;
+
     if (state.view === "locked") {
       lockLayer.visible = true;
       if (unlocking) {
         // свайп принят: слой уезжает вверх и тает, обои остаются на месте
-        const k = Math.min(1, (now - unlockStartedAt) / 300);
-        state.unlock = Math.min(1, unlockFrom + (1 - unlockFrom) * (k * k * (3 - 2 * k)));
+        const k = clamp01((now - unlockStartedAt) / 460);
+        const eased = k < 0.5 ? 4 * k * k * k : 1 - (-2 * k + 2) ** 3 / 2;
+        state.unlock = Math.min(1, unlockFrom + (1 - unlockFrom) * eased);
         if (state.unlock >= 1) {
           unlocking = false;
           state.unlock = 0;
           state.view = "call";
           lockLayer.visible = false;
           lockLayer.position.y = 0;
+          lockLayer.scale.set(1, 1, 1);
           layerMat.opacity = 1;
           go("incoming");
           paint();
@@ -2434,13 +2574,22 @@ export function initPhone() {
         /* Пока жест активен, слой держится за пальцем: раньше tick гасил
            unlock прямо во время перетаскивания — отсюда «дёргание»,
            самопроизвольное опускание и застревание шторки. */
-        state.unlock *= 0.86;
-        if (state.unlock < 0.01) state.unlock = 0;
+        state.unlock += (0 - (state.unlock ?? 0)) * (1 - Math.exp(-dt / 0.13));
+        if (state.unlock < 0.004) state.unlock = 0;
       }
-      lockLayer.position.y = (state.unlock ?? 0) * 3.95;
-      layerMat.opacity = 1 - (state.unlock ?? 0) * 0.9;
+      const u = state.unlock ?? 0;
+      lockLayer.position.y = u * 3.95;
+      /* Плашка не должна таять на старте жеста: до половины она полностью
+         непрозрачна (по жалобе «исчезает почти сразу»), и только на
+         последних сантиметрах уходит в прозрачность. */
+      const vanish = clamp01((u - 0.55) / 0.45);
+      layerMat.opacity = 1 - vanish * 0.55;
+      // лёгкий уход в глубину — шторка отъезжает, а не просто скользит
+      const shrink = 1 - vanish * 0.04;
+      lockLayer.scale.set(shrink, shrink, 1);
     } else {
       lockLayer.visible = false;
+      lockLayer.scale.set(1, 1, 1);
     }
 
     if (state.sms) {
@@ -2465,23 +2614,30 @@ export function initPhone() {
 
       if (elapsed < TIMELINE.backEnd) {
         // спина: медленный разворот, чтобы было видно яблоко и блок камер
-        const k = elapsed / TIMELINE.backEnd;
+        const k = easeInOut(clamp01(elapsed / TIMELINE.backEnd));
         group.rotation.y = Math.PI + 0.5 - k * 0.3;
         group.rotation.x = -0.06 + Math.sin(k * Math.PI) * 0.05;
         group.rotation.z = 0;
       } else if (elapsed < TIMELINE.flipStart) {
-        // дрожь: телефон «звонит», из него идут сигналы
-        const shake = clamp01((elapsed - TIMELINE.backEnd) / 0.6);
-        const amp = 0.008 + shake * 0.014;
-        group.rotation.y = Math.PI + 0.2 + Math.sin(elapsed * 6) * 0.05;
-        group.rotation.z = Math.sin(elapsed * 46) * amp * 0.5;
-        group.position.x = Math.sin(elapsed * 52) * amp;
-        group.position.y = Math.sin(elapsed * 39) * amp * 0.6;
+        /* дрожь: телефон «звонит», из него идут сигналы.
+           Амплитуда входит плавно и гаснет к перевороту — раньше на стыке
+           фаз был скачок позиции и угла, и переворот начинался рывком. */
+        const local = elapsed - TIMELINE.backEnd;
+        const shake = clamp01(local / 0.5);
+        const ramp = Math.sin((shake * Math.PI) / 2);
+        const fadeOut = 1 - clamp01((elapsed - (TIMELINE.flipStart - 0.45)) / 0.45);
+        const amp = (0.005 + shake * 0.009) * fadeOut;
+        const wob = Math.sin(local * 6) * 0.045 * ramp * fadeOut;
+        group.rotation.y = Math.PI + 0.2 + wob;
+        group.rotation.x = -0.06;
+        group.rotation.z = Math.sin(local * 40) * amp * 0.4;
+        group.position.x = Math.sin(local * 46) * amp;
+        group.position.y = Math.sin(local * 34) * amp * 0.6;
       } else if (elapsed < TIMELINE.flipEnd) {
-        // переворот экраном к человеку
-        const k = easeInOut(clamp01((elapsed - TIMELINE.flipStart) / (TIMELINE.flipEnd - TIMELINE.flipStart)));
-        group.rotation.y = Math.PI * (1 - k);
-        group.rotation.z = Math.sin(k * Math.PI) * -0.05;
+        // переворот экраном к человеку — от того угла, на котором кончилась дрожь
+        const k = smoothstep(clamp01((elapsed - TIMELINE.flipStart) / (TIMELINE.flipEnd - TIMELINE.flipStart)));
+        group.rotation.y = (Math.PI + 0.2) * (1 - k);
+        group.rotation.z = Math.sin(k * Math.PI) * -0.045;
         group.rotation.x = -0.06 * (1 - k);
         group.position.x = 0;
         group.position.y = Math.sin(k * Math.PI) * 0.04;
@@ -2491,9 +2647,9 @@ export function initPhone() {
         const k = clamp01((elapsed - TIMELINE.flipEnd) / (TIMELINE.ready - TIMELINE.flipEnd));
         group.rotation.y = 0;
         group.rotation.z = 0;
-        group.rotation.x = -0.04 * (1 - k);
+        group.rotation.x = 0;
         group.position.x = 0;
-        group.position.y = 0;
+        group.position.y = Math.sin((1 - k) * Math.PI) * 0.012;
         screenMat.opacity = 1;
         if (elapsed >= TIMELINE.ready && !introDone) {
           introDone = true;
@@ -2501,46 +2657,102 @@ export function initPhone() {
           if (status) status.textContent = "экран блокировки";
         }
       }
-
-      updateRings(elapsed);
     } else if (!introDone) {
       // заставка ещё не запускалась: спина, лёгкое покачивание
       group.rotation.y = Math.PI + Math.sin(t * 0.4) * 0.06;
       group.rotation.x = -0.05;
       screenMat.opacity = 0;
-      updateRings(t);
     } else {
       const damp = hovering || grab.active ? 0.15 : 1;
-      pointer.x += (target.x * damp - pointer.x) * 0.07;
-      pointer.y += (target.y * damp - pointer.y) * 0.07;
-      const free = grab.active ? 0 : damp;
+      const follow = 1 - Math.exp(-dt / 0.075);
+      pointer.x += (target.x * damp - pointer.x) * follow;
+      pointer.y += (target.y * damp - pointer.y) * follow;
+      const free = grab.active || home.active ? 0 : damp;
       // пока на телефон не навели курсор — он мелко дрожит: живой аппарат ждёт звонка
-      const tremble = Math.sin(t * 26.5) * 0.005 * free + Math.sin(t * 41) * 0.0016 * free;
+      const tremble = Math.sin(t * 26.5) * 0.0024 * free + Math.sin(t * 41) * 0.0009 * free;
+
+      /* Плавный возврат в исходное положение по двойному клику. */
+      if (home.active) {
+        const k = clamp01((now - home.at) / 620);
+        const eased = k < 0.5 ? 4 * k * k * k : 1 - (-2 * k + 2) ** 3 / 2;
+        manual.y = home.fromY * (1 - eased);
+        manual.x = home.fromX * (1 - eased);
+        spin.y = 0;
+        spin.x = 0;
+        if (k >= 1) home.active = false;
+      }
       /* Докрутка после отпускания. Телефон остаётся в том положении,
          в котором его оставили: он твой, а не «возвращается сам». */
-      if (!grab.active && (Math.abs(spin.y) > 0.0005 || Math.abs(spin.x) > 0.0005)) {
-        manual.y += spin.y * 0.016;
-        manual.x += spin.x * 0.016;
-        spin.y *= 0.93;
-        spin.x *= 0.93;
+      if (!grab.active && !home.active && (Math.abs(spin.y) > 0.0005 || Math.abs(spin.x) > 0.0005)) {
+        manual.y += spin.y * dt;
+        manual.x += spin.x * dt;
+        const decay = Math.exp(-dt * 3.6);
+        spin.y *= decay;
+        spin.x *= decay;
         if (Math.abs(spin.y) < 0.0005) spin.y = 0;
         if (Math.abs(spin.x) < 0.0005) spin.x = 0;
       }
       group.rotation.y = manual.y + pointer.x * 0.3;
       group.rotation.x = manual.x - pointer.y * 0.16;
       group.rotation.z = tremble * 0.5;
-      group.position.y = Math.sin(t * 0.55) * 0.03 + Math.sin(t * 33) * 0.0016 * free;
+      group.position.y = Math.sin(t * 0.55) * 0.022 + Math.sin(t * 33) * 0.0009 * free;
     }
 
-    glow.material.opacity = state.mode === "active" ? 0.3 + Math.sin(t * 2.2) * 0.06 : 0.46;
+    /* Кольца живут своим таймером: после последнего сигнала все гасим,
+       иначе они остаются висеть навсегда и «плавают» вокруг телефона. */
+    if (ringsAt > 0) {
+      const ringTime = (now - ringsAt) / 1000;
+      updateRings(ringTime);
+      if (ringTime > RINGS_TOTAL) {
+        ringsAt = -1;
+        rings.forEach((ring) => {
+          ring.mesh.visible = false;
+          ring.mesh.material.opacity = 0;
+        });
+      }
+    }
+
+    /* ── фоновый свет: всегда позади корпуса ───────────────────────────
+       Считаем, насколько телефон вытянут в глубину при текущем повороте,
+       и отодвигаем за это расстояние и ореол, и кольца. Так они никогда
+       не оказываются внутри корпуса и не просвечивают сквозь экран. */
+    const cosY = Math.abs(Math.cos(group.rotation.y));
+    const sinY = Math.abs(Math.sin(group.rotation.y));
+    const cosX = Math.abs(Math.cos(group.rotation.x));
+    const sinX = Math.abs(Math.sin(group.rotation.x));
+    const extent = (bodyW * sinY + depth * cosY + bodyH * sinX + depth * cosX) * 0.5;
+    const projW = bodyW * cosY + depth * sinY;
+    const projH = bodyH * cosX + depth * sinX;
+    const face = cosY * cosX; // 1 — экран к камере, 0 — телефон ребром
+
+    backFx.position.set(group.position.x, group.position.y, -(extent + 0.75));
+    halo.position.z = 0.4;
+    halo.scale.set((projW + 0.5) / 0.414, (projH + 0.5) / 0.414, 1);
+    /* Пятно тоже тянется по силуэту, а не висит кругом: в профиль оно
+       сжимается в узкую полосу вместе с корпусом. */
+    glow.scale.set((projW + 2.1) / 4.7, (projH + 2.1) / 4.7, 1);
+
+    const active = state.mode === "active";
+    const incoming = state.mode === "incoming";
+    const pulse = 0.5 + 0.5 * Math.sin(t * 2.1);
+    /* На входящем звонке аппарат «вибрирует» — нимб дышит чаще. */
+    const beat = incoming ? 0.5 + 0.5 * Math.sin(t * 8.8) : pulse;
+    /* Широкое пятно — это «воздух», а не наклейка: когда телефон ставят
+       ребром, экран смотрит в сторону, и такого света быть не должно. */
+    glow.material.opacity = (active ? 0.26 : 0.32) * (0.12 + 0.88 * face ** 1.2) + pulse * 0.035;
+    /* Нимб — наоборот, от корпуса: он остаётся и в профиль, и со спины. */
+    halo.material.opacity = (active ? 0.36 : 0.32) * (0.82 + 0.18 * face) + beat * 0.045;
+
+    signalGroup.position.set(group.position.x, group.position.y, -(extent + 0.55));
 
     const targetW = state.mode === "active" ? ISLAND.w + 26 : ISLAND.w;
     const targetH = state.mode === "active" ? ISLAND.h + 2 : ISLAND.h;
     const dw = targetW - state.islandW;
     const dh = targetH - state.islandH;
     if (Math.abs(dw) > 0.4 || Math.abs(dh) > 0.2) {
-      state.islandW += dw * 0.12;
-      state.islandH += dh * 0.12;
+      const kIsland = 1 - Math.exp(-dt / 0.11);
+      state.islandW += dw * kIsland;
+      state.islandH += dh * kIsland;
       paintIsland(state.islandW, state.islandH);
       layoutIsland(state.islandW, state.islandH);
       paint();
@@ -2603,12 +2815,68 @@ export function initPhone() {
   }
 
   if (location.search.includes("dbg")) {
+    window.__phoneFrames = 0;
     window.__phone = {
-      seek: (s) => { introStart = performance.now() - s * 1000; introDone = false; RING_TIMES.forEach((t, i) => { rings[i].start = t; }); tick(); group.updateMatrixWorld(true); updateClip(); renderer.render(scene, camera); },
+      seek: (s) => { introStart = performance.now() - s * 1000; ringsAt = introStart; introDone = false; RING_TIMES.forEach((t, i) => { rings[i].start = t; }); tick(); group.updateMatrixWorld(true); updateClip(); renderer.render(scene, camera); },
       tick,
       go,
       forceUnlock: () => { state.view = "call"; go("incoming"); paint(); },
       state,
+      /* Отладка сцены: поворот, состояние фона и кадр. Только под ?dbg. */
+      rotate: (y, x = 0) => {
+        manual.y = y;
+        manual.x = x;
+        home.active = false;
+        spin.y = 0;
+        spin.x = 0;
+        introDone = true;
+        introStart = 0;
+        tick();
+        renderer.render(scene, camera);
+      },
+      ringsAt: (at) => {
+        updateRings(at);
+        renderer.render(scene, camera);
+      },
+      /* Прокрутка сценария без rAF: шаг фиксированный, время честное. */
+      simulate: (seconds, step = 1 / 60) => {
+        fixedDt = step;
+        const steps = Math.round(seconds / step);
+        for (let i = 0; i < steps; i += 1) tick();
+        fixedDt = 0;
+        renderer.render(scene, camera);
+        return steps;
+      },
+      probe: () => ({
+        rotY: +group.rotation.y.toFixed(3),
+        rotX: +group.rotation.x.toFixed(3),
+        backZ: +backFx.position.z.toFixed(3),
+        haloScale: [+halo.scale.x.toFixed(2), +halo.scale.y.toFixed(2)],
+        ringsZ: +signalGroup.position.z.toFixed(3),
+        lockY: +lockLayer.position.y.toFixed(3),
+        lockOpacity: +layerMat.opacity.toFixed(3),
+        unlock: +(state.unlock ?? 0).toFixed(3),
+        view: state.view,
+        mode: state.mode,
+        glowOpacity: +glow.material.opacity.toFixed(3),
+        audio: audioCtx ? audioCtx.state : null,
+        voice: voice ? "играет" : "нет",
+        ringsVisible: rings.filter((r) => r.mesh.visible).length,
+      }),
+      setUnlock: (v) => {
+        state.view = "locked";
+        state.unlock = v;
+        unlocking = false;
+        tick();
+        renderer.render(scene, camera);
+      },
+      snap: async (name) => {
+        renderer.render(scene, camera);
+        const data = canvas.toDataURL("image/png");
+        const blob = await (await fetch(data)).blob();
+        const res = await fetch(`http://127.0.0.1:5199/shot?name=${encodeURIComponent(name)}`, { method: "POST", body: blob });
+        return res.text();
+      },
     };
   }
   paint();
