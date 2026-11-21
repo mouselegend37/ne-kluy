@@ -1240,7 +1240,7 @@ export function initPhone() {
       const old = blurTextures.pop();
       if (old !== layerTexture) old.dispose();
     }
-    const radii = [0, 2.5, 5, 9];
+    const radii = [0, 3, 5.5, 10];
     radii.forEach((r) => {
       if (r === 0) { blurTextures.push(layerTexture); return; }
       const c = document.createElement("canvas");
@@ -2718,7 +2718,7 @@ export function initPhone() {
       /* Чем дальше уехала шторка, тем сильнее расфокус контента:
          на настоящем экране блокировки часы и уведомления мутнеют,
          а не уезжают резкой картинкой. */
-      setLayerSharpness(u > 0.62 ? 3 : u > 0.36 ? 2 : u > 0.12 ? 1 : 0);
+      setLayerSharpness(u > 0.6 ? 3 : u > 0.34 ? 2 : u > 0.08 ? 1 : 0);
       // лёгкий уход в глубину — шторка отъезжает, а не просто скользит
       const shrink = 1 - vanish * 0.05;
       lockLayer.scale.set(shrink, shrink, 1);
