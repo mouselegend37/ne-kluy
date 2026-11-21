@@ -1084,8 +1084,10 @@ export function initPhone() {
       canvas,
       alpha: true,
       antialias: true,
-      // ?dbg — только для покадровой проверки: без этого буфера canvas.toDataURL пуст
-      preserveDrawingBuffer: location.search.includes("dbg"),
+      /* Буфер сохраняем всегда: иначе снимок экрана (и системный, и canvas.toDataURL)
+         может получиться пустым — жалоба «фотографирую, а экрана нет».
+         Для этой сцены цена копии буфера незаметна. */
+      preserveDrawingBuffer: true,
     });
   } catch {
     stage.classList.add("phone--flat");
@@ -1260,8 +1262,8 @@ export function initPhone() {
     if (!blurTextures.length) return;
     const next = blurTextures[Math.min(level, blurTextures.length - 1)] || layerTexture;
     if (layerMat.map === next) return;
+    /* без needsUpdate: иначе three.js пересобирает программу и кадр мигает */
     layerMat.map = next;
-    layerMat.needsUpdate = true;
   };
 
   const lockLayer = new THREE.Mesh(roundedPlane(screenW, screenH, (74 / DESIGN.w) * screenW), layerMat);
@@ -2361,7 +2363,7 @@ export function initPhone() {
     unlockFrom = state.unlock ?? 0;
   };
 
-  const endSwipe = () => {
+  const endSwipe = (cancel = false) => {
     if (!swipe.active) return false;
     swipe.active = false;
     if (swipe.pointerId !== null) {
@@ -2372,7 +2374,13 @@ export function initPhone() {
       }
     }
     swipe.pointerId = null;
-    if ((state.unlock ?? 0) >= UNLOCK_THRESHOLD) finishUnlock();
+    if (!cancel && (state.unlock ?? 0) >= UNLOCK_THRESHOLD) {
+      finishUnlock();
+    } else if (revealed) {
+      /* шторка возвращается — под ней снова экран блокировки */
+      revealed = false;
+      paint();
+    }
     return true;
   };
 
@@ -2415,7 +2423,14 @@ export function initPhone() {
       swipe.startY = event.clientY;
       swipe.lastMoveAt = performance.now();
       unlocking = false; // новый жест отменяет прежний досчёт
-      revealed = false;
+      /* один раз на жест: под шторкой должен быть звонок, а не обои */
+      if (!revealed) {
+        revealed = true;
+        const keep = state.view;
+        state.view = "call";
+        paint();
+        state.view = keep;
+      }
       try {
         canvas.setPointerCapture(event.pointerId);
       } catch {
@@ -2659,9 +2674,10 @@ export function initPhone() {
 
     if (state.view === "locked") {
       lockLayer.visible = true;
-      /* Сторожевой таймер: если указатель «потерялся» (отпустили за окном,
-         не пришёл pointerup), жест не должен висеть и держать слой за краем. */
-      if (swipe.active && now - swipe.lastMoveAt > 1500) endSwipe();
+      /* Сторожевой таймер на случай потерянного pointerup. Он НЕ разблокирует:
+         «нет движения» не значит «отпустил» — человек может просто держать
+         палец. Жест отменяется, шторка мягко возвращается. */
+      if (swipe.active && now - swipe.lastMoveAt > 6000) endSwipe(true);
 
       /* Дотянул до самого верха — открываем, не ждём отпускания. */
       if (swipe.active && !unlocking && (state.unlock ?? 0) >= UNLOCK_SNAP) finishUnlock();
@@ -2692,23 +2708,10 @@ export function initPhone() {
         if (state.unlock < 0.004) state.unlock = 0;
       }
       const u = state.unlock ?? 0;
-      /* Под уезжающей шторкой сразу должен быть экран вызова, иначе на
-         середине жеста человек видит пустые обои: это и выглядело как
-         «шторка исчезла». Рисуем его заранее и возвращаем обои, если
-         жест отменили. */
-      /* Экран входящего рисуем сразу, как только началось движение:
-         иначе на середине жеста под шторкой сменяются обои на звонок
-         и это читается как «экран потемнел». */
-      if (!revealed && u > 0.02) {
-        revealed = true;
-        const keep = state.view;
-        state.view = "call";
-        paint();
-        state.view = keep;
-      } else if (revealed && u < UNLOCK_THRESHOLD && !unlocking) {
-        revealed = false;
-        paint();
-      }
+      /* Экран под шторкой переключается ТОЛЬКО в начале жеста (pointerdown)
+         и при его отмене. Раньше это делалось по порогу u прямо в кадре:
+         рука слегка колеблется вокруг порога — и текстура экрана
+         перерисовывалась десятки раз, отсюда мигание прозрачности. */
       lockLayer.position.y = u * (screenH + 0.15);
       /* Плашка не должна таять на старте жеста: до 55% хода она полностью
          непрозрачна (по жалобе «исчезает почти сразу»), и только на
