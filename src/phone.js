@@ -780,9 +780,15 @@ function drawNotifications(ctx, state) {
 function drawLockLayer(ctx, state) {
   ctx.setTransform(TEXTURE_SCALE, 0, 0, TEXTURE_SCALE, 0, 0);
   ctx.clearRect(0, 0, DESIGN.w, DESIGN.h);
-  /* Слой — только контент (часы, уведомления, индикатор). Фон под ним —
-     обои экрана: так шторка уезжает по обоям, а не тянет за собой
-     чёрную плашку. При протяжке контент уходит в расфокус (см. blurs). */
+  /* лёгкая подложка: под шторкой может быть экран вызова, и сквозь
+     полупрозрачные карточки он не должен читаться деталями.
+     Непрозрачной заливки нет — иначе низ экрана выглядел чёрной плашкой. */
+  const veil = ctx.createLinearGradient(0, 0, 0, DESIGN.h);
+  veil.addColorStop(0, "rgba(12, 7, 12, 0.5)");
+  veil.addColorStop(0.62, "rgba(10, 6, 10, 0.44)");
+  veil.addColorStop(1, "rgba(8, 5, 9, 0.36)");
+  ctx.fillStyle = veil;
+  ctx.fillRect(0, 0, DESIGN.w, DESIGN.h);
   drawStatusBar(ctx, state);
 
   ctx.textAlign = "center";
