@@ -23,7 +23,7 @@ IP-адреса и провайдера в окне входа (`ipwho.is`, ре
 
 ## Где смотреть
 
-Живой сайт: **https://mouselegend37.github.io/ne-kluy/**
+Живой сайт: **https://nekluy.github.io/**
 
 Публикуется автоматически: любой коммит в ветку `main` собирается на GitHub Actions
 и уезжает на GitHub Pages за минуту (`.github/workflows/pages.yml`). Руками ничего
